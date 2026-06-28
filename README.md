@@ -1,165 +1,122 @@
 # RICOH GR StickS3 Remote Viewfinder
 
-这是运行在 **M5Stack StickS3** 上的 RICOH GR 远程取景固件。当前版本以 **BLE 作为相机在线状态的唯一入口**：固件先通过 BLE 找到并连接相机，再通过 BLE 请求相机临时开启 Wi-Fi，最后仅把 Wi-Fi 作为 LiveView 高速数据通道使用。
+[![PlatformIO](https://img.shields.io/badge/PlatformIO-v6.12.0-blue.svg)](https://platformio.org/)
+[![Board](https://img.shields.io/badge/Board-ESP32--S3-orange.svg)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/hw-reference/index.html)
+[![Hardware](https://img.shields.io/badge/Hardware-M5Stack--StickS3-red.svg)](https://docs.m5stack.com/en/core/m5stamp_s3)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 当前能力
+[English Version](README_EN.md)
 
-- BLE 扫描、配对、重连 RICOH GR 相机。
-- 通过已验证的 BLE ATT 句柄开启相机 Wi-Fi。
-- 从相机 BLE WLAN 参数区读取 Wi-Fi 连接参数。
-- 使用相机返回的 SSID / passphrase / BSSID 连接 Wi-Fi。
-- 通过 HTTP `/v1/props` 探测相机状态。
-- 打开 `/v1/liveview`，读取 MJPEG，解码 JPEG 并显示在 StickS3 屏幕上。
-- G11 外接按键按下即触发 BLE 快门。
-- Button B 暂停 / 恢复 LiveView。
-- 相机关机、BLE 断开、Wi-Fi 断开、LiveView 卡住时自动回到 BLE 扫描恢复流程。
+一个运行在 **M5Stack StickS3** 上的理光 RICOH GR 智能无线电子取景器 (EVF) 与遥控快门固件。
 
-## 硬件
+---
 
-- M5Stack StickS3
-- RICOH GR III / GR IIIx / GR IV 或兼容 RICOH GR 机型
-- 可选：外接瞬时按键，接在 **GPIO11 (G11)** 与 **GND** 之间
+## 📸 现场演示 / Showcase
 
-G11 使用 `INPUT_PULLUP`，低电平按下。固件使用 GPIO 中断锁存按下沿，避免 LiveView 解码期间漏按。
+> 💡 **提示**：可在此处替换或放入您的硬件组装与实际工作照片。建议存放于项目 `docs/images/` 目录下。
 
-## PlatformIO 配置
+| 📸 硬件组装与外观 (Hardware Setup) | 🎬 腰平取景工作实拍 (In Action) |
+| :---: | :---: |
+| ![RICOH GR StickS3 Viewfinder Setup](docs/images/hardware_setup.jpg) | ![Waist Level Viewfinder Action](docs/images/liveview_action.jpg) |
 
-目标配置位于 `platformio.ini`：
+---
 
-```ini
-[env:m5stack-sticks3]
-platform = espressif32@6.12.0
-board = esp32-s3-devkitc-1
-framework = arduino
+## 🎯 制作目的与主要场景
+
+本固件专为理光 RICOH GR 系列相机的街头摄影与创意拍摄而设计，旨在打造一个**迷你无线监视器**：
+
+1. **腰平取景器 (Waist-Level Viewfinder)**：将 StickS3 固定在相机热靴上或手持，无需低头或趴在地上，即可通过手里的屏幕完成低角度、街头暗访等腰平视角的精准构图。
+2. **远程监视遥控器 (Remote Monitor & Shutter)**：相机架设在三脚架上时，可在最远 10 米外手持 StickS3 实时预览画面并遥控快门，非常适合合影、延时摄影或自拍。
+
+---
+
+## 🚀 核心工作流
+
+固件实现了**完全免人工配置**的自动化连接：
+
+```text
+[开机上电] 
+   │
+   ▼
+[自动 BLE 扫描] ────► 发现首选理光相机
+   │
+   ▼
+[自动 BLE 建立加密连接] ────► 注入理光验证 Passkey 123456
+   │
+   ▼
+[自动激活相机 Wi-Fi] ────► 通过 BLE 下发 WLAN 开启指令并读取临时 SSID/密码
+   │
+   ▼
+[自动连接相机 Wi-Fi] ────► ESP32 切换至 STA 模式接入相机热点
+   │
+   ▼
+[进入实时预览 (LiveView)] ──► HTTP /v1/liveview 视频流解码 + 硬件快门触发 (GPIO11)
 ```
 
-重要说明：
+---
 
-- `platformio.ini` 中不再配置相机 Wi-Fi SSID 或密码。
-- 串口波特率：`115200`
-- USB CDC 开机启用。
-- Core debug level 已收敛为错误级别，避免正式固件输出大量底层日志。
+## ✨ 核心特性
 
-## 构建与烧录
+- **动态凭据免配置**：理光相机每次开启 Wi-Fi 生成的密码不同。本固件通过 BLE 实时读取相机参数区（SSID / 密码 / BSSID），实现真正的**即开即连**。
+- **边缘中断快门 (GPIO11)**：外接瞬时快门按键使用硬件 GPIO 中断（`FALLING` 沿）进行事件锁存，保证即使在 CPU 高负载进行 JPEG 解码时也绝不漏按。
+- **低延迟双缓冲渲染**：采用 `JPEGDEC` 解码库在 PSRAM 中直接输出大端序 RGB565 像素，LovyanGFX 双缓冲合并透明 HUD 信息（FPS、电量、RSSI、帧率统计）后一次性推送至 LCD，彻底消除屏幕闪烁。
+- **RF 共存与防锁死保护**：
+  - 显式启用 Wi-Fi 节能睡眠模式 (`WiFi.setSleep(true)`)，确保 ESP32-S3 单天线在 BLE 与 Wi-Fi 共存时连接稳定；
+  - 连接连续失败时，自动重构 BLE 协议栈 (`resetStack`)，解决底层 NimBLE 偶发性死锁问题。
+- **本地配置文件持久化**：使用 ESP32 NVS 存储首选相机的 BLE 地址和名称。开机自动寻机重连，未发现首选设备时自动进入配对扫描模式。
+
+---
+
+## 🛠️ 硬件需求与组装
+
+1. **控制板**：[M5Stack StickS3](https://docs.m5stack.com/en/core/m5stamp_s3)
+2. **相机**：RICOH GR III / GR IIIx / GR IV 或兼容 BLE 控制的理光机型。
+3. **外接快门按键**：接在 **GPIO11 (G11)** 与 **GND** 之间（固件使用 `INPUT_PULLUP`），可组装在手柄或快门线上。
+
+---
+
+## 💻 固件烧录
+
+基于 PlatformIO 环境开发，配置位于 [platformio.ini](platformio.ini)。
 
 ```bash
+# 1. 编译固件
 platformio run
+
+# 2. 烧录到 StickS3 模块
 platformio run -t upload
+
+# 3. 串口日志监控（波特率 115200）
 platformio device monitor
 ```
 
-> 本仓库只负责生成固件；实际烧录和串口监听建议按设备连接情况手动执行。
+---
 
-## 正式工作流程
+## 🕹️ 按键与交互控制
 
-```mermaid
-flowchart TD
-    A["设备上电 / 重启"] --> B["初始化屏幕 / 按键 / BLE / Wi-Fi / NVS"]
-    B --> C["读取 Camera Profile"]
-    C --> D["进入 BLE 扫描"]
-    D --> E{"发现 RICOH GR BLE?"}
-    E -- "否" --> D
-    E -- "是" --> F["连接 BLE"]
-    F --> G{"BLE 连接成功?"}
-    G -- "否" --> H["重置 BLE 状态后重试"]
-    H --> D
-    G -- "是" --> I["保存 / 更新 BLE 身份"]
-    I --> J["BLE_READY"]
-    J --> K["通过 BLE 开启相机 Wi-Fi"]
-    K --> L["读取 BLE 返回的 Wi-Fi 参数"]
-    L --> M{"SSID + 密码可用?"}
-    M -- "否" --> J
-    M -- "是" --> N["连接相机 Wi-Fi"]
-    N --> O{"Wi-Fi 连接成功?"}
-    O -- "否" --> J
-    O -- "是" --> P["HTTP /v1/props 探测相机"]
-    P --> Q{"HTTP 可用?"}
-    Q -- "否" --> D
-    Q -- "是" --> R["启动 LiveView"]
-    R --> S["读取 MJPEG / 解码 / 显示"]
-    S --> T{"G11 按下?"}
-    T -- "是" --> U["BLE 快门"]
-    U --> S
-    T -- "否" --> V{"BLE / Wi-Fi / LiveView 异常?"}
-    V -- "否" --> S
-    V -- "是" --> W["关闭 LiveView 和 Wi-Fi，回到 BLE 扫描或 BLE_READY 恢复"]
-    W --> D
-```
+- **G11 快门按键 (外接)**：按下即执行 BLE 快门序列（半按对焦 $\rightarrow$ 全按曝光 $\rightarrow$ 释放快门）。如果当前处于断开状态，按下 G11 会自动拉起相机连接恢复流程。
+- **Button B (StickS3 侧边键)**：暂停 / 恢复 LiveView。暂停图传后，Wi-Fi 连接和 HTTP 请求会被断开，以最大化省电；再次按下时重新通过 BLE 唤醒 Wi-Fi 并连接。
+- **Button A (StickS3 正面键)**：保留，作为扩展交互接口。
 
-## Wi-Fi 参数来源
+---
 
-相机 Wi-Fi 不是固件的启动入口。固件会在 BLE 连接成功后写入 Wi-Fi ON 句柄：
+## 🔗 理光 BLE 特征值规范
 
-- Wi-Fi ON handle：`0x0135`
-- ON value：`0x01`
+固件通过对以下 BLE 服务和特征句柄（适配理光 GR4/GR3 协议）进行读写，完成控制与参数获取：
 
-随后读取相机 WLAN 参数区：
+| 功能 (Feature) | 句柄 (GATT Handle) | 操作 (Operation) | 载荷规范 (Payload) |
+| :--- | :---: | :---: | :--- |
+| **Wi-Fi 开启开关** | `0x0135` | Write | 写入 `0x01` 激活热点 |
+| **Wi-Fi SSID** | `0x0138` | Read | 动态获取相机 SSID |
+| **Wi-Fi 密码** | `0x013A` | Read | 动态获取 Wi-Fi 密码 |
+| **Wi-Fi BSSID** | `0x0140` | Read | 动态获取 AP MAC 地址 |
+| **快门控制** | `0x0099` | Write | 序列：对焦 `0x01` $\rightarrow$ 拍摄 `0x02` $\rightarrow$ 释放 `0x00` |
 
-- `0x0138`：SSID 候选
-- `0x013A`：passphrase / password 候选
-- `0x0140`：BSSID 候选
-- `0x013C`：安全类型
-- `0x013E`：频段 / 附加元数据
+---
 
-如果相机返回的是明文 SSID 和 passphrase，固件会直接连接。如果 passphrase 是 App 协商密钥加密后的 AES-GCM 密文，当前正式固件会拒绝使用静态密码兜底，并保持在 BLE 恢复流程中，等待后续补齐 ECDH / AES-GCM 解密实现。
+## 🛡️ 异常恢复保护机制
 
-## 按键行为
-
-- **G11 外接按键**：按下即触发 BLE 快门序列。
-- **Button B**：暂停 / 恢复 LiveView。
-- **Button A**：保留，不发送相机控制命令。
-
-BLE 快门使用已验证句柄：
-
-- 快门 handle：`0x0099`
-- 序列：`01` → `02` → `00`
-
-## 运行日志
-
-正式固件只保留关键日志，例如：
-
-```text
-RICOH GR StickS3 Remote Viewfinder V2
-Profile: camera='GR_xxxxxx' ble='xx:xx:xx:xx:xx:xx' ip='192.168.0.1'
-BLE: scanning for GR camera (2s max)
-BLE: selected camera name='GR_xxxxxx' addr=xx:xx:xx:xx:xx:xx rssi=-48
-BLE: connected
-BLE: Wi-Fi open requested
-BLE: Wi-Fi parameters received ssid='GR_xxxxxx' bssid='xx:xx:xx:xx:xx:xx'
-WiFi: connected ip=192.168.0.4 rssi=-45
-HTTP: camera ready model='RICOH GR IV HDF' battery='66%'
-LiveView: connected
-```
-
-不会再输出：
-
-- 每帧 JPEG 大小和解码耗时
-- BLE Wi-Fi 参数原始字节
-- 临时 Probe 详情
-- 静态 Wi-Fi 密码相关内容
-
-## 故障处理
-
-### BLE 找不到相机
-
-- 确认相机蓝牙开启。
-- 如果是首次使用，确认相机处于可配对 / 可连接状态。
-- 固件会持续回到 BLE 扫描，不会直接尝试 Wi-Fi。
-
-### BLE 连接成功但 Wi-Fi 不连接
-
-- 确认日志中出现 `BLE: Wi-Fi open requested`。
-- 如果没有出现 `BLE: Wi-Fi parameters received ...`，说明固件没有拿到可用 Wi-Fi 参数。
-- 如果相机返回加密 passphrase，需要继续实现 ECDH / AES-GCM 解密后才能完全脱离静态密码。
-
-### LiveView 黑屏或卡住
-
-- 确认 HTTP 探测 `/v1/props` 成功。
-- 确认相机允许 Remote Capture / LiveView。
-- 固件会在 LiveView 超时后关闭当前连接并回到 BLE 锚点恢复。
-
-### G11 不触发
-
-- 确认外接按键接在 GPIO11 与 GND 之间。
-- G11 是低电平触发，固件已使用中断捕获按下沿。
-- 如果 BLE 已断开，G11 会先触发相机恢复流程，而不会直接拍摄。
+1. **画面卡死监测 (Watchdog)**：若图传解析线程在持续 `LIVEVIEW_STALL_TIMEOUT_MS` (默认 5 秒) 内未能收到并解码有效帧，将判定为相机丢包卡死，自动切断连接并尝试热启动。
+2. **快速热启动 (Warm Reconnection)**：当 Wi-Fi 因信号差断开时，若 BLE 链路依然保持连接，固件不会进行重新扫频。它会在 `BleReady` 状态下，重新发送 Wi-Fi ON 指令并快速尝试 Wi-Fi 重连。
+3. **冷启动 (Cold Reset)**：若 BLE 链路同样断开，固件将关闭所有网络传输，重置 BLE 协议栈，并退回 `BleScan` 状态进行全局重新搜寻与配对连接。
+4. **配对与首次使用**：若 NVS 中无绑定记录，固件在启动时会自动进行 `FIRST_BOOT_BLE_PAIRING_ATTEMPTS = 12` 轮的全局配对扫描，并注入 Passkey `123456` 进行配对。
