@@ -202,3 +202,12 @@ src/
   camera_profile_store.*   NVS 相机身份存储
   g11_button.*             G11 外接按键中断
 ```
+
+## 开源许可证
+
+本项目基于 GNU General Public License v3.0 开源。
+
+你可以在 GPL-3.0 协议条款下使用、修改和分发本项目。  
+如果你分发修改后的版本或基于本项目的衍生作品，也需要按照 GPL-3.0 协议开放对应源代码。
+
+详情请查看 [LICENSE](LICENSE) 文件。
