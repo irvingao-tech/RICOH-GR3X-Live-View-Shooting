@@ -47,5 +47,5 @@ private:
     void clear(uint16_t color = 0x0000);
     void drawStatusLines(const char* line1, const char* line2, const char* line3, const char* line4 = nullptr);
     void drawWifiIcon(int16_t x, int16_t y, int32_t rssi);
-    void drawBatteryIcon(int16_t x, int16_t y, const String& batteryStr);
+    void drawBatteryIcon(int16_t x, int16_t y, const char* batteryStr);
 };
