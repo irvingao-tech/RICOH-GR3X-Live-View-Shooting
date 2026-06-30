@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <M5PM1.h>
+#include <Wire.h>
 #include <esp_heap_caps.h>
 
 #include "buttons.h"
@@ -23,6 +25,7 @@ JpegDecoder decoder;
 CameraProfileStore profileStore;
 CameraProfile cameraProfile;
 RicohBleClient ricohBle;
+M5PM1 stickPower;
 
 enum class CameraFlowState {
   BleScan,
@@ -41,6 +44,10 @@ CameraProps cameraProps;
 bool liveviewEnabled = true;
 uint32_t lastFrameAt = 0;
 uint32_t lastStatusAt = 0;
+uint32_t powerButtonLastPollAt = 0;
+uint32_t powerButtonPressedSince = 0;
+bool powerButtonHoldReported = false;
+bool stickPowerReady = false;
 uint32_t lastCameraRecoveryAt = 0;
 bool cameraRecoveryInProgress = false;
 bool cameraAutoWakeBlocked = false;
@@ -61,6 +68,59 @@ String lastStatusLine4;
 
 constexpr uint32_t STATUS_MIN_REDRAW_MS = 1500;
 constexpr bool DRAW_LIVE_OVERLAY = true;
+
+bool beginStickPower() {
+  const int8_t sda = M5.getPin(m5::pin_name_t::in_i2c_sda);
+  const int8_t scl = M5.getPin(m5::pin_name_t::in_i2c_scl);
+  const m5pm1_err_t err = stickPower.begin(&Wire, M5PM1_DEFAULT_ADDR, sda, scl, M5PM1_I2C_FREQ_100K);
+  stickPowerReady = (err == M5PM1_OK);
+  if (!stickPowerReady) {
+    Serial.printf("Power: M5PM1 begin failed err=%d; fallback to M5Unified power API\n", static_cast<int>(err));
+    return false;
+  }
+
+  stickPower.setDoubleOffDisable(false);
+  stickPower.btnSetConfig(M5PM1_BTN_TYPE_DOUBLE, M5PM1_BTN_DOUBLE_CLICK_DELAY_500MS);
+
+  bool pressed = false;
+  stickPower.btnGetState(&pressed);
+  Serial.println("Power: M5PM1 ready");
+  return true;
+}
+
+bool isStickPowerButtonPressed() {
+  if (stickPowerReady) {
+    bool pressed = false;
+    if (stickPower.btnGetState(&pressed) == M5PM1_OK) {
+      return pressed;
+    }
+  }
+  return M5.BtnPWR.isPressed();
+}
+
+bool pollStickPowerHold() {
+  const uint32_t now = millis();
+  if ((now - powerButtonLastPollAt) < POWER_BUTTON_POLL_MS) {
+    return false;
+  }
+  powerButtonLastPollAt = now;
+
+  const bool pressed = isStickPowerButtonPressed();
+  if (!pressed) {
+    powerButtonPressedSince = 0;
+    powerButtonHoldReported = false;
+    return false;
+  }
+
+  if (powerButtonPressedSince == 0) {
+    powerButtonPressedSince = now;
+  }
+  if (!powerButtonHoldReported && (now - powerButtonPressedSince) >= POWER_BUTTON_HOLD_MS) {
+    powerButtonHoldReported = true;
+    return true;
+  }
+  return false;
+}
 
 const char* cameraPowerStateName(RicohCameraPowerState state) {
   switch (state) {
@@ -854,6 +914,45 @@ void requestManualCameraWake(const char* source) {
   lastCameraRecoveryAt = online ? millis() : 0;
 }
 
+void shutdownStickS3() {
+  static bool shuttingDown = false;
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  cameraRecoveryInProgress = true;
+
+  Serial.println("Power: shutdown requested");
+  closeLiveView("power off");
+  grWifi.disconnect();
+  ricohBle.disconnect();
+
+  ui.showBoot("Release PWR...");
+  const uint32_t startMs = millis();
+  while (isStickPowerButtonPressed() && (millis() - startMs) < POWER_BUTTON_RELEASE_WAIT_MS) {
+    M5.update();
+    delay(20);
+    yield();
+  }
+
+  ui.showBoot("Power off...");
+  delay(200);
+  if (stickPowerReady) {
+    Serial.println("Power: M5PM1 shutdown command");
+    Serial.flush();
+    const m5pm1_err_t err = stickPower.shutdown();
+    if (err != M5PM1_OK) {
+      Serial.printf("Power: M5PM1 shutdown failed err=%d; fallback to M5Unified\n", static_cast<int>(err));
+      Serial.flush();
+    }
+    delay(300);
+  }
+  M5.Power.powerOff();
+  while (true) {
+    delay(1000);
+  }
+}
+
 void triggerShutterFromButtonA() {
   if (cameraSleepGuardActive()) {
     requestManualCameraWake("Button A manual wake");
@@ -884,6 +983,10 @@ void triggerShutterFromButtonA() {
 
 void handleButtons() {
   const ButtonEvents events = buttons.poll();
+  if (events.powerOff || pollStickPowerHold()) {
+    shutdownStickS3();
+    return;
+  }
   if (events.buttonA) {
     triggerShutterFromButtonA();
   }
@@ -946,6 +1049,7 @@ void setup() {
   ui.showBoot("V2 booting...");
   waitForSerialConsole();
 
+  beginStickPower();
   buttons.begin();
   decoder.begin();
   grWifi.begin();

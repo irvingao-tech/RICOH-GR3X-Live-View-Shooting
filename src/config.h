@@ -21,6 +21,9 @@ constexpr uint32_t BLE_SCAN_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t PROPS_TIMEOUT_MS = 3500;
 constexpr uint32_t LIVEVIEW_STALL_TIMEOUT_MS = 5000;
 constexpr uint32_t UI_STATUS_INTERVAL_MS = 1000;
+constexpr uint32_t POWER_BUTTON_POLL_MS = 50;
+constexpr uint32_t POWER_BUTTON_HOLD_MS = 1200;
+constexpr uint32_t POWER_BUTTON_RELEASE_WAIT_MS = 3000;
 constexpr uint32_t PROPS_REFRESH_INTERVAL_MS = 60000;
 
 #ifndef JPEG_SCALE_POLICY
