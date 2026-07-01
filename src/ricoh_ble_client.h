@@ -19,6 +19,8 @@ struct RicohBleWifiCredentials {
   bool valid = false;
   bool encryptedPassphrase = false;
   int securityType = -1;
+  uint16_t frequencyMhz = 0;
+  uint8_t channel = 0;
   String ssid;
   String passphrase;
   String bssid;
@@ -56,6 +58,7 @@ public:
   int consumeDisconnectReason();
   void clearDisconnectReason();
   void resetStack(bool clearObjects = false);
+  bool lastFailureWasResourceExhausted() const;
 
   String statusText() const;
   const String& lastError() const;
@@ -63,6 +66,7 @@ public:
 private:
   bool _begun = false;
   bool _connected = false;
+  bool _lastFailureResourceExhausted = false;
   String _lastError;
   void* _client = nullptr;
 };

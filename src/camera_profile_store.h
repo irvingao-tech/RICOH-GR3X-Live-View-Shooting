@@ -8,6 +8,9 @@ struct WifiCredential {
   String passphrase;
   String bssid;
   String cameraIp;
+  uint16_t frequencyMhz = 0;
+  uint8_t channel = 0;
+  bool cached = false;
 };
 
 struct CameraProfile {
@@ -25,6 +28,8 @@ public:
   bool begin();
   bool load(CameraProfile& profile);
   bool save(const CameraProfile& profile);
+  bool saveWifiCredentials(const String& bleAddress, const WifiCredential& wifi);
+  bool clearWifiCredentials();
   bool saveBleIdentity(const String& cameraName, const String& bleAddress);
   bool saveBleIdentity(const String& cameraName, const String& bleAddress, uint8_t bleAddressType, bool bleBonded);
   bool clear();
