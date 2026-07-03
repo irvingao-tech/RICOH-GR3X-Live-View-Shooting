@@ -11,6 +11,11 @@ constexpr uint16_t COLOR_BG = 0x1082;     // Matte Charcoal Black (#121212)
 constexpr uint16_t COLOR_AMBER = 0xFD20;  // Signature Amber Orange (#FF9500)
 constexpr uint16_t COLOR_SLATE = 0x2104;  // Slate Gray (#212121)
 constexpr uint16_t COLOR_GRAY = 0x7BEF;   // Mid Gray (#7B7B7B)
+constexpr uint16_t COLOR_CARD = 0x0841;   // Deep black panel
+constexpr uint16_t COLOR_PANEL = 0x18E3;  // Dark graphite
+constexpr uint16_t COLOR_GRAPHITE = 0x31A6;
+constexpr uint16_t COLOR_DARK = 0x0000;
+constexpr uint16_t COLOR_HILITE = 0xE71C;
 
 const char* safeText(const char* value, const char* fallback = "") {
     return value != nullptr ? value : fallback;
@@ -282,54 +287,83 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
     const char* s3 = safeText(line3);
     const char* s4 = safeText(line4);
 
-    const bool scanStopped = statusContains(s1, s2, s3, s4, "BLE UNAVAILABLE") ||
-                             statusContains(s1, s2, s3, s4, "SCAN STOP") ||
-                             statusContains(s1, s2, s3, s4, "STOPPED") ||
-                             statusContains(s1, s2, s3, s4, "ATTEMPTS EXHAUSTED") ||
-                             statusContains(s1, s2, s3, s4, "CAMERA STANDBY") ||
-                             statusContains(s1, s2, s3, s4, "AUTO WAKE") ||
-                             statusContains(s1, s2, s3, s4, "COOLDOWN");
+    const bool bleStopped = statusContains(s1, s2, s3, s4, "BLE UNAVAILABLE") ||
+                            statusContains(s1, s2, s3, s4, "SCAN STOP") ||
+                            statusContains(s1, s2, s3, s4, "STOPPED") ||
+                            statusContains(s1, s2, s3, s4, "ATTEMPTS EXHAUSTED") ||
+                            statusContains(s1, s2, s3, s4, "CAMERA STANDBY") ||
+                            statusContains(s1, s2, s3, s4, "AUTO WAKE") ||
+                            statusContains(s1, s2, s3, s4, "COOLDOWN");
 
-    const uint16_t accent = scanStopped ? COLOR_RED : COLOR_AMBER;
-    const char* topStatus = scanStopped ? "STOPPED" : "SCANNING";
-    const char* title = scanStopped ? "SCAN STOPPED" : "SCANNING";
-    const char* subtitle = scanStopped ? "Restart StickS3" : "Searching RICOH GR";
-    const char* detail = scanStopped ? "Power off/on device" : "Keep camera nearby";
+    const bool bleConnected = statusContains(s1, s2, s3, s4, "BLE_READY") ||
+                              statusContains(s1, s2, s3, s4, "BLE LINK READY") ||
+                              statusContains(s1, s2, s3, s4, "WIFI") ||
+                              statusContains(s1, s2, s3, s4, "HTTP") ||
+                              statusContains(s1, s2, s3, s4, "LIVEVIEW") ||
+                              statusContains(s1, s2, s3, s4, "LIVE VIEW") ||
+                              statusContains(s1, s2, s3, s4, "BUTTON A SHUTTER");
 
-    const int16_t labelW = static_cast<int16_t>(strlen(topStatus) * 6);
-    _canvas.setTextColor(accent, COLOR_BG);
-    _canvas.setCursor(_width - 10 - labelW, 8);
-    _canvas.print(topStatus);
+    const bool bleConnecting = statusContains(s1, s2, s3, s4, "CONNECTING") ||
+                               statusContains(s1, s2, s3, s4, "CAMERA FOUND") ||
+                               statusContains(s1, s2, s3, s4, "FAST CONNECT");
 
-    _canvas.drawRoundRect(16, 36, _width - 32, 66, 8, accent);
-    _canvas.fillCircle(38, 68, 8, accent);
-    if (!scanStopped) {
-        _canvas.fillCircle(38, 68, 3, COLOR_BG);
-    } else {
-        _canvas.drawLine(34, 64, 42, 72, COLOR_BG);
-        _canvas.drawLine(42, 64, 34, 72, COLOR_BG);
+    const char* bleStatus = "BLE SEARCHING...";
+    if (bleConnected) {
+        bleStatus = "BLE CONNECTED";
+    } else if (bleStopped) {
+        bleStatus = "BLE PAUSED";
+    } else if (bleConnecting) {
+        bleStatus = "BLE CONNECTING...";
     }
 
+    // Fixed rectangular viewfinder frame. The border intentionally stays the
+    // same graphite color; only the GR IV status dot reflects BLE state.
+    const int16_t x = 8;
+    const int16_t y = 6;
+    const int16_t w = _width - 16;
+    const int16_t h = _height - 12;
+    _canvas.fillRoundRect(x, y, w, h, 10, COLOR_CARD);
+    _canvas.drawRoundRect(x, y, w, h, 10, COLOR_GRAPHITE);
+    _canvas.drawRoundRect(x + 2, y + 2, w - 4, h - 4, 8, COLOR_SLATE);
+
+    // Abstract dark geometric surface inspired by the reference image, adapted
+    // to the StickS3 rectangular screen instead of a round lens.
+    _canvas.fillTriangle(x + 10, y + 16, x + 94, y + 16, x + 45, y + 106, COLOR_PANEL);
+    _canvas.fillTriangle(x + 92, y + 18, x + 142, y + 68, x + 98, y + 112, COLOR_DARK);
+    _canvas.fillTriangle(x + 120, y + 60, x + 205, y + 16, x + 202, y + 108, COLOR_PANEL);
+    _canvas.fillTriangle(x + 118, y + 62, x + 166, y + 112, x + 210, y + 80, COLOR_SLATE);
+    _canvas.fillTriangle(x + 142, y + 72, x + 184, y + 34, x + 216, y + 74, COLOR_DARK);
+    _canvas.fillTriangle(x + 72, y + 24, x + 108, y + 110, x + 56, y + 112, COLOR_DARK);
+
+    // White diagonal highlight band.
+    const int16_t hx1 = x + 14;
+    const int16_t hy1 = y + 28;
+    const int16_t hx2 = x + 214;
+    const int16_t hy2 = y + 86;
+    const int16_t band = 12;
+    _canvas.fillTriangle(hx1, hy1, hx2, hy2, hx2, hy2 + band, COLOR_HILITE);
+    _canvas.fillTriangle(hx1, hy1, hx2, hy2 + band, hx1, hy1 + band, COLOR_HILITE);
+
+    // Re-darken lower lens facets over the highlight for a layered aperture feel.
+    _canvas.fillTriangle(x + 150, y + 78, x + 184, y + 34, x + 216, y + 80, COLOR_DARK);
+    _canvas.fillTriangle(x + 146, y + 82, x + 210, y + 82, x + 134, y + 112, COLOR_DARK);
+
     _canvas.setTextSize(2);
-    _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
-    _canvas.setCursor(58, 52);
+    _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
+    const char* title = "GR IV";
+    const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
+    const int16_t titleX = static_cast<int16_t>((_width - titleW) / 2 - 4);
+    _canvas.setCursor(titleX, y + 14);
     _canvas.print(title);
+    _canvas.fillCircle(titleX + titleW + 11, y + 21, 4, bleConnected ? COLOR_GREEN : COLOR_RED);
 
-    _canvas.setTextSize(1);
-    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
-    _canvas.setCursor(58, 78);
-    _canvas.print(subtitle);
-
-    _canvas.drawFastHLine(10, _height - 24, _width - 20, COLOR_SLATE);
-    _canvas.setTextColor(scanStopped ? COLOR_RED : COLOR_GRAY, COLOR_BG);
-    _canvas.setCursor(10, _height - 16);
-    _canvas.print(detail);
-
-    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
-    _canvas.setCursor(138, _height - 16);
-    _canvas.print(scanStopped ? "Restart required" : "Scanning...");
+    _canvas.setTextSize(2);
+    const int16_t statusW = static_cast<int16_t>(strlen(bleStatus) * 12);
+    const int16_t statusX = static_cast<int16_t>((_width - statusW) / 2);
+    _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
+    _canvas.setCursor(statusX, y + h - 29);
+    _canvas.print(bleStatus);
 }
-
 // Graphic helper to draw WiFi RSSI strength bars
 void DisplayUi::drawWifiIcon(int16_t x, int16_t y, int32_t rssi) {
     uint8_t bars = 0;
