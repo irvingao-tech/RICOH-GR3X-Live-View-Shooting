@@ -1,7 +1,5 @@
 # RICOH GR StickS3 Remote Viewfinder
 
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thinkerzhang)
-
 运行在 M5Stack StickS3 上的 RICOH GR 无线实时取景和 BLE 遥控快门固件。
 
 固件以 **BLE 作为相机发现、配对、唤醒和控制入口**：先通过 BLE 找到并安全连接相机，再按相机当前状态决定是否发送 Wi-Fi ON 指令；Wi-Fi 启动后读取相机动态返回的 WLAN 参数，最后通过 RICOH HTTP API 打开 LiveView 并在 StickS3 屏幕显示 MJPEG 预览。

@@ -46,18 +46,18 @@ BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning
 
 - 触发：`consumeCameraPowerOffDisconnect()`（断连 reason `0x213`/`0x215`）或 `consumeCameraPowerOffNotification()`（BLE 电源通知 `0x00`）→ `enterCameraSleepGuard()`。
 - 期间 `cameraAutoWakeBlocked=true`，`cameraSleepGuardBlocksFlow()` 拦截一切自动流程；`cameraSleepGuardCooldownActive()` 判断 15s 冷却。
-- 冷却结束**仍不自动唤醒**；须 `requestManualCameraWake(source)`：`clearCameraSleepGuard()` + `cameraManualWakeOverride=true` + `ricohBle.resetStack(true)` + 等 `BLE_MANUAL_WAKE_REINIT_SETTLE_MS` + `runCameraFlowOnce()`。
-- 保护态不写 NVS → StickS3 重启即重新扫描。
+- 冷却结束**仍不自动唤醒**；须 `requestManualCameraWake(source)`：`clearCameraSleepGuard()` + `cameraManualWakeOverride=true` + `bleCamera.resetStack(true)` + 等 `BLE_MANUAL_WAKE_REINIT_SETTLE_MS` + `runCameraFlowOnce()`。
+- 保护态只保存在 RAM 中；StickS3 重启后会重新走自动连接流程。
 
 ### 电源门控
 
-`ensureCameraPowerReadyForWifi(source)`：开 Wi-Fi 前必须 `ricohBle.readPowerState()`（最多 `RICOH_BLE_POWER_READ_RETRIES=2` 次）确认为 `On`，并 `enablePowerStateNotify()` 订阅电源 CCCD。`Off/Unknown` → 进保护态；`cameraManualWakeOverride` 可旁路。
+`ensureCameraPowerReadyForWifi(source)`：开 Wi-Fi 前必须 `bleCamera.readPowerState()`（最多 `RICOH_BLE_POWER_READ_RETRIES=2` 次）确认为 `On`，并 `bleCamera.enablePowerStateNotify()` 订阅电源 CCCD。`Off/Unknown` → 进保护态；`cameraManualWakeOverride` 可旁路。
 
 ### `setup()` / `loop()`
 
 - `setup()`：`Serial` → `ui.begin()` → boot 画面 → 等串口 → `buttons/decoder/grWifi.begin()` → `applyDefaultProfile()` → PSRAM 检查 → 分配 `frameBuffer`（PSRAM 优先，回退内部 RAM，失败则停机）→ `mjpeg.begin(frameBuffer, ..., onJpegFrame)` → `runCameraFlowOnce()`。
 - `loop()`（每轮 `delay(1)`）：
-  1. `handleButtons()` — 仅 `M5.BtnA`：保护态则 `requestManualCameraWake`，否则 `triggerShutterFromButtonA()`（`ricohBle.shoot(true)`）。
+  1. `handleButtons()` — 仅 `M5.BtnA`：保护态则 `requestManualCameraWake`，否则 `triggerShutterFromButtonA()`（`bleCamera.shoot(true)`）。
   2. `serviceCameraFlowIfNeeded()` — 非运行态按 `BLE_SCAN_RETRY_INTERVAL_MS` 周期推进。
   3. `ensureWiFi()` — LiveView 中 Wi-Fi 掉线即恢复。
   4. `refreshPropsIfDue()` — 每 `PROPS_REFRESH_INTERVAL_MS=60s` 刷新 `/v1/props`。
@@ -171,7 +171,7 @@ BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning
 - namespace `"ricoh2"`，`profileVersion=3`。
 - 键：`proto_ver`/`cam_name`/`ble_addr`/`ble_addr_type`/`ble_bonded`/`cam_ip`。
 - `load()`/`save()`/`saveBleIdentity(name, addr[, type, bonded])`/`clear()`；`getStringIfPresent` 缺键返回空串。
-- **只持久化 BLE 身份 + 相机 IP**，不存 Wi-Fi 凭据（每次运行时 BLE 动态获取）；保护态不写 NVS。
+- 持久化 BLE 身份、相机 IP 和 Wi-Fi 缓存；保护态不写 NVS。
 
 数据结构：`WifiCredential{ssid, passphrase, bssid, cameraIp}`、`CameraProfile{cameraName, bleAddress, bleAddressType, bleAddressTypeKnown, bleBonded, wifi, profileVersion}`。
 

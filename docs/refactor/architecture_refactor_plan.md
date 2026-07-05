@@ -4,7 +4,7 @@
 
 本计划根据当前仓库源码、README 与外部重构说明整理。当前固件运行在 ESP32-S3 / M5Stack StickS3 / PlatformIO Arduino 环境，核心流程是：BLE 扫描/连接理光 GR IV 系列相机，读取相机状态，通过 BLE 打开相机 Wi-Fi，连接相机热点，通过 HTTP LiveView 读取 MJPEG/JPEG 帧并显示，同时支持按钮快门与连接恢复。
 
-本轮重构遵循“阶段化、小步可回滚、每阶段可编译”的原则。当前阶段只建立架构文档与空骨架，不接管业务逻辑。
+本轮重构遵循“阶段化、小步可回滚、每阶段可编译”的原则。阶段 0-9 已完成基础分层、服务门面、预览缓冲、AppController 状态机与 SystemSupervisor 健康事件接入；阶段 10 继续整理主运行时接线，不改变 BLE/Wi-Fi/Power/LiveView 协议行为。
 
 ## 当前代码结构
 
@@ -59,6 +59,7 @@ src/supervisor/  健康检查与恢复策略
 8. 阶段 7：引入 `PreviewFrameBuffer` 与长时间运行统计；若风险高，先只记录诊断，不替换内存分配。
 9. 阶段 8：`AppController` 逐步接管主状态机；禁止一次性重写 `main.cpp`。
 10. 阶段 9：`SystemSupervisor` 添加健康检查事件；不在监督器内执行耗时恢复。
+11. 阶段 10：整理 App runtime 接线，收拢 Arduino `loop()` 每轮调度入口；只提升主循环可读性，不改变状态机顺序与业务判断。
 
 ## 风险与验证要点
 
@@ -73,6 +74,7 @@ src/supervisor/  健康检查与恢复策略
 | 7 | 内存占用上升、watchdog | 5 分钟以上预览，free heap 稳定，无崩溃重启 |
 | 8 | 状态机条件遗漏 | 全流程状态转移日志清晰，异常恢复不退化 |
 | 9 | 误触发恢复 | 正常预览不误恢复，断连后恢复路径正确 |
+| 10 | 主循环调度顺序漂移 | native 测试与固件构建通过，确认按钮、相机流程、Wi-Fi/LiveView 监控、Supervisor、UI 刷新顺序保持一致 |
 
 ## 后续 Codex 提示词骨架
 
@@ -96,6 +98,10 @@ src/supervisor/  健康检查与恢复策略
 
 只做包装式迁移，先让旧对象作为服务内部依赖；每次只接管一个窄接口，实机日志验证通过后再继续。
 
+### 阶段 10
+
+整理 `main.cpp` 的运行时接线；允许抽出只包装现有调用顺序的小函数，禁止改变 BLE 扫描/连接、Wi-Fi ON、电源保护、HTTP props、LiveView 和按钮语义。
+
 ## 本轮实施范围
 
-本轮只执行阶段 0 和阶段 1：新增 `docs/refactor/architecture_refactor_plan.md` 与空骨架文件。不会迁移、删除、重命名或改写现有功能代码。
+阶段 10 只整理 App runtime 接线：`loop()` 保留为 Arduino 入口，实际每轮调度由内部 `runAppTick()` 承载。不会迁移、删除、重命名或改写 BLE/Wi-Fi/Power/LiveView 功能代码。

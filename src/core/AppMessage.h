@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <Arduino.h>
+#include <cstdint>
 #include "AppEvent.h"
 
 namespace rvf {

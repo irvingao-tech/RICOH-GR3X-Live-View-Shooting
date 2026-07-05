@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "../core/AppMessage.h"
 #include "../core/Result.h"
 #include "../ricoh_ble_client.h"
 
@@ -19,6 +20,7 @@ public:
     Result begin(RicohBleClient& client);
 
     Result scan();
+    bool consumeEvent(AppMessage& message);
     RicohBleDeviceInfo scanCamera(const String& preferredAddress,
                                   const String& preferredName,
                                   uint32_t scanSeconds);
@@ -50,8 +52,12 @@ public:
 
 private:
     Result requireClient(const char* operation) const;
+    void publish(AppEventType type, int code = 0, const char* detail = nullptr);
+    void publishPowerState(RicohCameraPowerState state);
 
     RicohBleClient* _client = nullptr;
+    AppMessage _pendingEvent;
+    bool _hasPendingEvent = false;
 };
 
 }  // namespace rvf

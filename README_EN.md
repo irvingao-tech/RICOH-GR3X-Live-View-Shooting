@@ -1,7 +1,5 @@
 # RICOH GR StickS3 Remote Viewfinder
 
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thinkerzhang)
-
 Firmware for running RICOH GR wireless live view and BLE remote shutter on the M5Stack StickS3.
 
 The firmware uses **BLE as the entry point for discovery, pairing, wake control, and shutter control**. It connects securely to the camera over BLE, checks whether the camera is really in an active mode before sending Wi-Fi ON, reads the dynamic WLAN parameters returned by the camera, then opens the RICOH HTTP LiveView stream and displays MJPEG frames on the StickS3 screen.

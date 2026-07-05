@@ -5,6 +5,12 @@ namespace rvf {
 enum class AppState {
     Booting,
     Idle,
+    BleScan,
+    CameraSleepGuard,
+    BleReady,
+    WifiConnecting,
+    HttpProbe,
+    LiveViewRunning,
     ScanningCamera,
     ConnectingBle,
     CheckingCameraPower,
@@ -19,5 +25,7 @@ enum class AppState {
     Disconnected,
     Error,
 };
+
+const char* appStateName(AppState state);
 
 }  // namespace rvf

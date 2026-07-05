@@ -4,10 +4,10 @@
 #include <esp_heap_caps.h>
 
 #include "buttons.h"
-#include "ble_reconnect_policy.h"
 #include "camera_identity.h"
 #include "camera_profile_store.h"
 #include "config.h"
+#include "app/AppController.h"
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "display.h"
@@ -18,6 +18,9 @@
 #include "ricoh_ble_client.h"
 #include "services/BleCameraService.h"
 #include "services/CameraPowerPolicy.h"
+#include "services/PreviewFrameBuffer.h"
+#include "services/WifiPreviewService.h"
+#include "supervisor/SystemSupervisor.h"
 #include "ui/ButtonInput.h"
 
 namespace {
@@ -34,23 +37,20 @@ RicohBleClient ricohBle;
 rvf::BleCameraService bleCamera(ricohBle);
 M5PM1 stickPower;
 rvf::CameraPowerPolicy cameraPowerPolicy;
-
-enum class CameraFlowState {
-  BleScan,
-  CameraSleepGuard,
-  BleReady,
-  WifiConnecting,
-  HttpProbe,
-  LiveViewRunning,
-};
-
-CameraFlowState cameraFlowState = CameraFlowState::BleScan;
+rvf::WifiPreviewService wifiPreview(grWifi, grApi, mjpeg);
+rvf::PreviewFrameBuffer previewFrameBuffer;
+rvf::SystemSupervisor systemSupervisor;
+using CameraFlowState = rvf::AppState;
+rvf::AppController appController(CameraFlowState::BleScan);
 uint8_t* frameBuffer = nullptr;
 uint8_t streamReadBuffer[rvf::AppConfig::Buffer::kStreamReadBufferSize];
 CameraProps cameraProps;
+CameraProps pendingCameraProps;
+RicohBleWifiCredentials pendingFreshWifiCredentials;
 
 bool liveviewEnabled = true;
 uint32_t lastFrameAt = 0;
+uint32_t lastLiveViewActivityAt = 0;
 uint32_t lastStatusAt = 0;
 uint32_t powerButtonLastPollAt = 0;
 uint32_t powerButtonPressedSince = 0;
@@ -76,9 +76,14 @@ String lastStatusLine3;
 String lastStatusLine4;
 bool wifiCacheRefreshPending = false;
 uint32_t wifiCacheRefreshAfter = 0;
+uint32_t lastManualWakeDeferredAt = 0;
 
 constexpr uint32_t STATUS_MIN_REDRAW_MS = 1500;
+constexpr uint32_t MANUAL_WAKE_DEFERRED_LOG_INTERVAL_MS = 1000;
 constexpr bool DRAW_LIVE_OVERLAY = true;
+
+void requestManualCameraWake(const char* source);
+rvf::AppFlowActions makeAppFlowActions();
 
 bool beginStickPower() {
   const int8_t sda = M5.getPin(m5::pin_name_t::in_i2c_sda);
@@ -190,33 +195,8 @@ rvf::CameraOperationStatus toPolicyOperationStatus(RicohCameraOperationMode mode
   return rvf::CameraOperationStatus::Ready;
 }
 
-const char* cameraFlowStateName(CameraFlowState state) {
-  switch (state) {
-    case CameraFlowState::BleScan:
-      return "BLE_SCAN";
-    case CameraFlowState::CameraSleepGuard:
-      return "CAMERA_SLEEP_GUARD";
-    case CameraFlowState::BleReady:
-      return "BLE_READY";
-    case CameraFlowState::WifiConnecting:
-      return "WIFI_CONNECTING";
-    case CameraFlowState::HttpProbe:
-      return "HTTP_PROBE";
-    case CameraFlowState::LiveViewRunning:
-      return "LIVEVIEW_RUNNING";
-  }
-  return "UNKNOWN";
-}
-
 void setCameraFlowState(CameraFlowState state, const char* reason) {
-  if (cameraFlowState != state) {
-    Serial.printf("Flow: %s -> %s (%s) uptime=%lums\n",
-                  cameraFlowStateName(cameraFlowState),
-                  cameraFlowStateName(state),
-                  reason != nullptr ? reason : "",
-                  static_cast<unsigned long>(millis()));
-  }
-  cameraFlowState = state;
+  appController.transitionTo(state, reason, millis());
 }
 
 void showStatusIfChanged(const String& line1,
@@ -256,11 +236,10 @@ void waitForSerialConsole() {
 }
 
 void closeLiveView(const char* reason) {
-  if (grApi.isLiveViewOpen()) {
+  if (wifiPreview.isPreviewRunning()) {
     Serial.printf("LiveView: closing (%s)\n", reason != nullptr ? reason : "reset");
   }
-  grApi.closeLiveView();
-  mjpeg.reset();
+  wifiPreview.stopPreview();
 }
 
 String preferredBleName() {
@@ -298,16 +277,29 @@ void showCameraSleepGuardStatus(bool force = false) {
 }
 
 void enterCameraSleepGuard(const char* source, int reason) {
+  if (cameraSleepGuardActive()) {
+    if (reason != 0 && cameraAutoWakeDisconnectReason == 0) {
+      cameraAutoWakeDisconnectReason = reason;
+    }
+    cameraPowerState = RicohCameraPowerState::OffOrShuttingDown;
+    cameraOperationMode = RicohCameraOperationMode::Unknown;
+    showCameraSleepGuardStatus(false);
+    lastFrameAt = millis();
+    lastCameraRecoveryAt = millis();
+    return;
+  }
+
   cameraPowerState = RicohCameraPowerState::OffOrShuttingDown;
   cameraOperationMode = RicohCameraOperationMode::Unknown;
   cameraAutoWakeBlocked = true;
   cameraAutoWakeDisconnectReason = reason;
   cameraAutoWakeCooldownUntil = millis() + CAMERA_POWER_OFF_COOLDOWN_MS;
+  lastManualWakeDeferredAt = 0;
 
   closeLiveView(source != nullptr ? source : "camera standby");
-  grWifi.disconnect();
-  ricohBle.disconnect();
-  setCameraFlowState(CameraFlowState::CameraSleepGuard, source != nullptr ? source : "camera standby");
+  wifiPreview.disconnectWifi();
+  bleCamera.disconnect();
+  setCameraFlowState(CameraFlowState::CameraPowerOff, source != nullptr ? source : "camera standby");
   Serial.printf("BLE guard: remote disconnect reason=%d; auto wake paused for %lus, then manual wake required\n",
                 reason,
                 static_cast<unsigned long>(CAMERA_POWER_OFF_COOLDOWN_MS / 1000));
@@ -341,10 +333,7 @@ bool consumeCameraPowerOffDisconnectAfterReady(const char* source) {
     return false;
   }
 
-  if (cameraFlowState == CameraFlowState::BleReady ||
-      cameraFlowState == CameraFlowState::WifiConnecting ||
-      cameraFlowState == CameraFlowState::HttpProbe ||
-      cameraFlowState == CameraFlowState::LiveViewRunning) {
+  if (appController.isPowerProtectedFlowState()) {
     enterCameraSleepGuard(source, reason);
     return true;
   }
@@ -493,7 +482,7 @@ void applyDefaultProfile() {
   if (cameraProfile.wifi.cameraIp.isEmpty()) {
     cameraProfile.wifi.cameraIp = GR_HOST;
   }
-  grApi.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
+  wifiPreview.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
 
   Serial.printf("Profile: camera='%s' ble='%s' ip='%s'\n",
                 cameraProfile.cameraName.c_str(),
@@ -514,6 +503,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     return false;
   }
 
+  setCameraFlowState(CameraFlowState::CheckingCameraPower, source != nullptr ? source : "check camera power");
   showStatusIfChanged("BLE_READY", "Checking power", cameraProfile.cameraName, "", true);
   RicohCameraPowerState nextState = RicohCameraPowerState::Unknown;
   bool readOk = false;
@@ -533,6 +523,10 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
   }
 
   cameraPowerState = readOk ? nextState : RicohCameraPowerState::Unknown;
+  if (consumeCameraPowerOffNotification("BLE power notify during power check")) {
+    return false;
+  }
+
   cameraOperationMode = RicohCameraOperationMode::Unknown;
   bool operationModeReadOk = false;
   if (cameraPowerPolicy.shouldReadOperationMode(readOk, toPolicyPowerStatus(cameraPowerState))) {
@@ -566,6 +560,10 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     }
   }
 
+  if (consumeCameraPowerOffNotification("BLE power notify before WiFi allow")) {
+    return false;
+  }
+
   if (cameraPowerPolicy.mayActivateWifi(toPolicyPowerStatus(cameraPowerState))) {
     if (cameraManualWakeOverride && operationModeReadOk && isCameraStandbyOperationMode(cameraOperationMode)) {
       Serial.printf("BLE: operation mode %s; manual wake override allows WiFi\n",
@@ -574,6 +572,9 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     const rvf::Result powerNotifyResult = bleCamera.enablePowerStateNotify();
     if (powerNotifyResult.failed()) {
       Serial.printf("BLE: power notify subscribe failed: %s\n", bleCamera.lastError().c_str());
+    }
+    if (consumeCameraPowerOffNotification("BLE power notify before WiFi allow")) {
+      return false;
     }
     return true;
   }
@@ -622,12 +623,17 @@ bool activateCameraWifiOverBle() {
   if (!ensureCameraPowerReadyForWifi("WiFi open")) {
     return false;
   }
+  if (consumeCameraPowerOffNotification("BLE power notify before WiFi open")) {
+    return false;
+  }
 
   showStatusIfChanged("BLE_READY", "Opening WiFi", cameraProfile.cameraName, "", true);
+  setCameraFlowState(CameraFlowState::ActivatingWifi, "BLE WiFi ON");
   const rvf::Result openWifiResult = bleCamera.openWifi();
   if (openWifiResult.failed()) {
     Serial.printf("BLE: Wi-Fi open failed: %s\n", bleCamera.lastError().c_str());
     showStatusIfChanged("BLE WiFi failed", bleCamera.lastError(), "", "", true);
+    setCameraFlowState(CameraFlowState::BleReady, "BLE WiFi open failed");
     return false;
   }
 
@@ -640,10 +646,6 @@ bool activateCameraWifiOverBle() {
 
 bool hasStoredBleIdentity() {
   return cameraProfile.bleAddress.length() > 0;
-}
-
-bool hasDirectBleIdentity() {
-  return hasDirectBleReconnectIdentity(cameraProfile.bleAddress.c_str(), cameraProfile.bleAddressTypeKnown);
 }
 
 String displayBleName(const RicohBleDeviceInfo& info) {
@@ -666,38 +668,6 @@ void saveConnectedBleIdentity(const String& connectedName, const RicohBleDeviceI
                                cameraProfile.bleBonded);
 }
 
-bool connectStoredBleIdentityFast() {
-  if (!hasDirectBleIdentity()) {
-    return false;
-  }
-
-  RicohBleDeviceInfo info;
-  info.found = true;
-  info.name = cameraProfile.cameraName;
-  info.address = cameraProfile.bleAddress;
-  info.addressType = cameraProfile.bleAddressType;
-  info.connectable = true;
-
-  RicohBleConnectOptions options;
-  options.timeoutMs = BLE_FAST_CONNECT_TIMEOUT_MS;
-  options.securityWaitMs = cameraProfile.bleBonded ? RICOH_BLE_BONDED_SECURITY_WAIT_MS : RICOH_BLE_SECURITY_WAIT_MS;
-  options.preConnectDelayMs = 0;
-  options.exchangeMtu = false;
-
-  showStatusIfChanged("BLE fast connect", cameraProfile.cameraName, cameraProfile.bleAddress, "Direct reconnect", true);
-  const rvf::Result fastConnectResult = bleCamera.connectCamera(info, options);
-  if (fastConnectResult.failed()) {
-    Serial.printf("BLE: fast direct connect failed: %s\n", bleCamera.lastError().c_str());
-    return false;
-  }
-
-  const String connectedName = displayBleName(info);
-  saveConnectedBleIdentity(connectedName, info);
-  showStatusIfChanged("BLE link ready", cameraProfile.cameraName, info.address, "WiFi via BLE", true);
-  setCameraFlowState(CameraFlowState::BleReady, "BLE direct connected");
-  return true;
-}
-
 bool runBleDiscoveryAtBoot() {
   if (cameraSleepGuardBlocksFlow("BLE discovery")) {
     return false;
@@ -709,20 +679,16 @@ bool runBleDiscoveryAtBoot() {
 
   if (firstBootPairing) {
     Serial.printf("BLE: no stored identity; pairing scan up to %u rounds\n", static_cast<unsigned>(attempts));
-  } else if (connectStoredBleIdentityFast()) {
-    return true;
-  } else if (consumeCameraPowerOffDisconnectAfterReady("BLE fast connect failed")) {
-    return false;
-  } else if (bleCamera.lastFailureWasResourceExhausted()) {
-    Serial.println("BLE: fast connect exhausted host resources; reset stack before scan retry");
-    ricohBle.resetStack();
   } else {
-    ricohBle.disconnect();
+    Serial.printf("BLE: stored identity; scanning preferred address='%s' name='%s'\n",
+                  cameraProfile.bleAddress.c_str(),
+                  preferredBleName().c_str());
   }
 
   for (uint8_t attempt = 1; attempt <= attempts; ++attempt) {
     bool skipRetryDelay = false;
     const String bleName = preferredBleName();
+    setCameraFlowState(CameraFlowState::ScanningCamera, "BLE discovery");
     showStatusIfChanged(firstBootPairing ? "Pairing GR BLE" : "Scanning GR BLE",
                         cameraProfile.bleAddress,
                         bleName,
@@ -741,6 +707,7 @@ bool runBleDiscoveryAtBoot() {
       const String connectedName = displayBleName(info);
 
       showStatusIfChanged("BLE camera found", connectedName, info.address, "Connecting...", true);
+      setCameraFlowState(CameraFlowState::ConnectingBle, "BLE scan candidate");
       RicohBleConnectOptions options;
       options.timeoutMs = BLE_CONNECT_TIMEOUT_MS;
       options.securityWaitMs = RICOH_BLE_SECURITY_WAIT_MS;
@@ -761,16 +728,16 @@ bool runBleDiscoveryAtBoot() {
                     bleCamera.lastError().c_str());
       consumeCameraPowerOffDisconnectAfterReady("BLE connect failed");
       showStatusIfChanged("BLE connect failed", bleCamera.lastError(), "Retrying...", "", true);
-      ricohBle.disconnect();
+      bleCamera.disconnect();
       if (bleCamera.lastFailureWasResourceExhausted()) {
         Serial.println("BLE: host resources exhausted during connect; reset stack before retry");
-        ricohBle.resetStack();
+        bleCamera.resetStack();
         consecutiveConnectFailures = 0;
         skipRetryDelay = true;
       } else {
         consecutiveConnectFailures++;
         if (BLE_STACK_RESET_AFTER_FAILURES > 0 && consecutiveConnectFailures >= BLE_STACK_RESET_AFTER_FAILURES) {
-          ricohBle.resetStack();
+          bleCamera.resetStack();
           consecutiveConnectFailures = 0;
           skipRetryDelay = true;
         }
@@ -785,7 +752,7 @@ bool runBleDiscoveryAtBoot() {
 
   showStatusIfChanged("BLE unavailable", "Return BLE scan", preferredBleName(), "", true);
   setCameraFlowState(CameraFlowState::BleScan, "BLE attempts exhausted");
-  ricohBle.resetStack();
+  bleCamera.resetStack();
   return false;
 }
 
@@ -793,8 +760,12 @@ bool bleStillConnectedForWifi() {
   return bleCamera.isConnected();
 }
 
+bool wifiStillConnectedForController() {
+  return grWifi.isConnected();
+}
+
 bool connectWifiFromProfile(bool forceStatus, bool requireBleAnchor = false, uint32_t totalTimeoutMs = WIFI_CONNECT_TIMEOUT_MS, bool allowFullScanFallback = true) {
-  grApi.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
+  wifiPreview.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
   showStatusIfChanged("Connecting WiFi", cameraProfile.wifi.ssid, cameraProfile.wifi.cameraIp, "", forceStatus);
   Serial.printf("WiFi: connecting ssid='%s' bssid='%s' channel=%u freq=%u\n",
                 cameraProfile.wifi.ssid.c_str(),
@@ -809,18 +780,13 @@ bool connectWifiFromProfile(bool forceStatus, bool requireBleAnchor = false, uin
                                  : totalTimeoutMs;
 
   if (channel != 0) {
-    connected = requireBleAnchor
-                  ? grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                   cameraProfile.wifi.passphrase.c_str(),
-                                   cameraProfile.wifi.bssid.c_str(),
-                                   channel,
-                                   hintTimeout,
-                                   bleStillConnectedForWifi)
-                  : grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                   cameraProfile.wifi.passphrase.c_str(),
-                                   cameraProfile.wifi.bssid.c_str(),
-                                   channel,
-                                   hintTimeout);
+    connected = wifiPreview.connectWifi(cameraProfile.wifi.ssid.c_str(),
+                                        cameraProfile.wifi.passphrase.c_str(),
+                                        cameraProfile.wifi.bssid.c_str(),
+                                        channel,
+                                        hintTimeout,
+                                        requireBleAnchor ? bleStillConnectedForWifi : nullptr)
+                  .ok();
 
     if (allowFullScanFallback && !connected && (!requireBleAnchor || bleStillConnectedForWifi())) {
       uint32_t fallbackTimeout = totalTimeoutMs > hintTimeout ? totalTimeoutMs - hintTimeout : totalTimeoutMs;
@@ -830,28 +796,22 @@ bool connectWifiFromProfile(bool forceStatus, bool requireBleAnchor = false, uin
       Serial.printf("WiFi: channel hint %u failed; fallback to full scan timeout=%lums\n",
                     static_cast<unsigned>(channel),
                     static_cast<unsigned long>(fallbackTimeout));
-      connected = requireBleAnchor
-                    ? grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                     cameraProfile.wifi.passphrase.c_str(),
-                                     cameraProfile.wifi.bssid.c_str(),
-                                     fallbackTimeout,
-                                     bleStillConnectedForWifi)
-                    : grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                     cameraProfile.wifi.passphrase.c_str(),
-                                     cameraProfile.wifi.bssid.c_str(),
-                                     fallbackTimeout);
+      connected = wifiPreview.connectWifi(cameraProfile.wifi.ssid.c_str(),
+                                          cameraProfile.wifi.passphrase.c_str(),
+                                          cameraProfile.wifi.bssid.c_str(),
+                                          0,
+                                          fallbackTimeout,
+                                          requireBleAnchor ? bleStillConnectedForWifi : nullptr)
+                    .ok();
     }
   } else {
-    connected = requireBleAnchor
-                  ? grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                   cameraProfile.wifi.passphrase.c_str(),
-                                   cameraProfile.wifi.bssid.c_str(),
-                                   totalTimeoutMs,
-                                   bleStillConnectedForWifi)
-                  : grWifi.connect(cameraProfile.wifi.ssid.c_str(),
-                                   cameraProfile.wifi.passphrase.c_str(),
-                                   cameraProfile.wifi.bssid.c_str(),
-                                   totalTimeoutMs);
+    connected = wifiPreview.connectWifi(cameraProfile.wifi.ssid.c_str(),
+                                        cameraProfile.wifi.passphrase.c_str(),
+                                        cameraProfile.wifi.bssid.c_str(),
+                                        0,
+                                        totalTimeoutMs,
+                                        requireBleAnchor ? bleStillConnectedForWifi : nullptr)
+                  .ok();
   }
 
   if (connected) {
@@ -865,142 +825,153 @@ bool connectWifiFromProfile(bool forceStatus, bool requireBleAnchor = false, uin
   return false;
 }
 
-bool connectWifiAfterBleReady() {
-  if (cameraSleepGuardBlocksFlow("connect WiFi")) {
+bool fetchCameraPropsForController() {
+  const rvf::Result propsResult = wifiPreview.fetchProps(pendingCameraProps, PROPS_TIMEOUT_MS);
+  if (propsResult.failed()) {
     return false;
   }
-  if (!bleCamera.isConnected()) {
-    if (consumeCameraPowerOffDisconnect("BLE lost before WiFi open")) {
-      return false;
-    }
-    setCameraFlowState(CameraFlowState::BleScan, "BLE lost before WiFi open");
-    return false;
-  }
-
-  setCameraFlowState(CameraFlowState::BleReady, "open WiFi via BLE");
-  if (!activateCameraWifiOverBle()) {
-    return false;
-  }
-
-  if (!bleCamera.isConnected()) {
-    grWifi.disconnect();
-    if (consumeCameraPowerOffDisconnect("BLE lost after WiFi open")) {
-      return false;
-    }
-    bleCamera.clearDisconnectReason();
-    setCameraFlowState(CameraFlowState::BleScan, "BLE lost after WiFi open");
-    return false;
-  }
-
-  if (hasUsableCachedWifiCredentials()) {
-    if (WIFI_CACHED_CONNECT_GRACE_MS > 0) {
-      Serial.printf("WiFi cache: waiting %lums for camera AP before cached connect\n",
-                    static_cast<unsigned long>(WIFI_CACHED_CONNECT_GRACE_MS));
-      delay(WIFI_CACHED_CONNECT_GRACE_MS);
-      yield();
-    }
-    Serial.printf("WiFi cache: trying cached params ssid='%s' bssid='%s' channel=%u short_timeout=%lums\n",
-                  cameraProfile.wifi.ssid.c_str(),
-                  cameraProfile.wifi.bssid.c_str(),
-                  static_cast<unsigned>(cameraProfile.wifi.channel),
-                  static_cast<unsigned long>(WIFI_CACHED_CONNECT_TIMEOUT_MS));
-    setCameraFlowState(CameraFlowState::WifiConnecting, "cached WiFi params");
-    if (connectWifiFromProfile(true, true, WIFI_CACHED_CONNECT_TIMEOUT_MS, false)) {
-      saveConnectedWifiBssidToCache("cached connect");
-      scheduleWifiCacheRefresh();
-      return true;
-    }
-    Serial.println("WiFi cache: cached connect failed; reading fresh BLE params");
-    grWifi.disconnect();
-    if (!bleCamera.isConnected()) {
-      if (consumeCameraPowerOffDisconnect("BLE lost during cached WiFi connect")) {
-        return false;
-      }
-      bleCamera.clearDisconnectReason();
-      setCameraFlowState(CameraFlowState::BleScan, "BLE lost during cached WiFi connect");
-      return false;
-    }
-  }
-
-  RicohBleWifiCredentials wifiCredentials;
-  const rvf::Result wifiCredentialsResult = bleCamera.waitForWifiCredentials(wifiCredentials, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS);
-  if (wifiCredentialsResult.failed()) {
-    showStatusIfChanged("BLE WiFi params", bleCamera.lastError(), "Back to BLE_READY", "", true);
-    grWifi.disconnect();
-    if (!bleCamera.isConnected()) {
-      if (consumeCameraPowerOffDisconnect("BLE lost waiting WiFi params")) {
-        return false;
-      }
-      bleCamera.clearDisconnectReason();
-      setCameraFlowState(CameraFlowState::BleScan, "BLE lost waiting WiFi params");
-      return false;
-    }
-    setCameraFlowState(CameraFlowState::BleReady, "BLE WiFi params unavailable");
-    return false;
-  }
-
-  applyBleWifiCredentials(wifiCredentials, "fresh BLE", false);
-
-  setCameraFlowState(CameraFlowState::WifiConnecting, "BLE returned WiFi params");
-  if (!connectWifiFromProfile(true, true)) {
-    grWifi.disconnect();
-    if (!bleCamera.isConnected()) {
-      if (consumeCameraPowerOffDisconnect("BLE lost during WiFi connect")) {
-        return false;
-      }
-      bleCamera.clearDisconnectReason();
-      setCameraFlowState(CameraFlowState::BleScan, "BLE lost during WiFi connect");
-      return false;
-    }
-    setCameraFlowState(CameraFlowState::BleReady, "WiFi connect failed");
-    return false;
-  }
-
-  saveConnectedWifiBssidToCache("fresh BLE connect");
   return true;
 }
 
-bool httpProbeCamera() {
-  if (!grWifi.isConnected()) {
-    setCameraFlowState(CameraFlowState::BleScan, "HTTP probe without WiFi");
-    return false;
-  }
+void onHttpProbeFailedForController() {
+  Serial.printf("HTTP: props probe failed: %s\n", wifiPreview.lastError().c_str());
+  showStatusIfChanged("HTTP probe failed", wifiPreview.lastError(), "Back to BLE scan", "", true);
+}
 
-  setCameraFlowState(CameraFlowState::HttpProbe, "WiFi connected");
-  CameraProps nextProps;
-  if (!grApi.fetchProps(nextProps, PROPS_TIMEOUT_MS)) {
-    Serial.printf("HTTP: props probe failed: %s\n", grApi.lastError().c_str());
-    showStatusIfChanged("HTTP probe failed", grApi.lastError(), "Back to BLE scan", "", true);
-    return false;
-  }
-
-  cameraProps = nextProps;
+void onHttpProbeSucceededForController() {
+  cameraProps = pendingCameraProps;
   lastPropsAt = millis();
   Serial.printf("HTTP: camera ready model='%s' battery='%s'\n", cameraProps.model.c_str(), cameraProps.battery.c_str());
   showStatusIfChanged("HTTP Probe OK", cameraProps.model, cameraProps.battery, "LiveView next", true);
+}
+
+void showStartingLiveViewForController() {
+  showStatusIfChanged("Starting LiveView", grWifi.localIPString(), cameraProps.model, cameraProps.battery, true);
+}
+
+bool openLiveViewForController() {
+  const rvf::Result previewResult = wifiPreview.startPreview();
+  if (previewResult.failed()) {
+    return false;
+  }
   return true;
 }
 
-bool startLiveViewFromProbe() {
-  if (!liveviewEnabled) {
-    return true;
-  }
-  if (!grWifi.isConnected()) {
-    return false;
-  }
+void onLiveViewOpenFailedForController() {
+  Serial.printf("LiveView: open failed: %s\n", wifiPreview.lastError().c_str());
+  showStatusIfChanged("LiveView failed", wifiPreview.lastError(), "Back to BLE scan", "", true);
+}
 
-  showStatusIfChanged("Starting LiveView", grWifi.localIPString(), cameraProps.model, cameraProps.battery, true);
-  if (!grApi.openLiveView()) {
-    Serial.printf("LiveView: open failed: %s\n", grApi.lastError().c_str());
-    showStatusIfChanged("LiveView failed", grApi.lastError(), "Back to BLE scan", "", true);
-    return false;
-  }
-
+void onLiveViewOpenedForController() {
   lastFrameAt = millis();
-  mjpeg.reset();
-  setCameraFlowState(CameraFlowState::LiveViewRunning, "LiveView opened");
+  lastLiveViewActivityAt = lastFrameAt;
+  previewFrameBuffer.resetRuntimeStats();
   Serial.println("LiveView: connected");
+}
+
+bool cameraRecoveryInProgressForController() {
+  return cameraRecoveryInProgress;
+}
+
+uint32_t lastCameraRecoveryAtForController() {
+  return lastCameraRecoveryAt;
+}
+
+void setLastCameraRecoveryAtForController(uint32_t timestampMs) {
+  lastCameraRecoveryAt = timestampMs;
+}
+
+void setCameraRecoveryInProgressForController(bool inProgress) {
+  cameraRecoveryInProgress = inProgress;
+}
+
+void showRecoveryBleReadyRetryForController(const char* reason) {
+  showStatusIfChanged("Camera recovery", reason != nullptr ? reason : "reconnect", "BLE_READY retry", "", true);
+}
+
+void showRecoveryBleScanForController(const char* reason) {
+  showStatusIfChanged("Camera recovery", reason != nullptr ? reason : "reconnect", "Back to BLE scan", "", true);
+}
+
+void shortRecoveryDelayForController() {
+  delay(100);
+}
+
+void onRecoveryGuardBlockedForController() {
+  lastFrameAt = millis();
+  lastCameraRecoveryAt = millis();
+  cameraRecoveryInProgress = false;
+}
+
+void onRecoveryFinishedForController(bool recovered) {
+  lastFrameAt = millis();
+  lastCameraRecoveryAt = recovered ? millis() : 0;
+  cameraRecoveryInProgress = false;
+}
+
+void requestManualCameraWakeForController(const char* source) {
+  requestManualCameraWake(source);
+}
+
+bool shutterReadyForController() {
+  return bleCamera.shutterReady();
+}
+
+void showShutterBleNotReadyForController() {
+  showStatusIfChanged("Button A shutter", "BLE not ready", "Back to BLE scan", "", true);
+}
+
+bool shootAutofocusForController() {
+  showStatusIfChanged("Button A shutter", "BLE shooting...", cameraProps.model, cameraProps.battery, true);
+  const rvf::Result shootResult = bleCamera.shoot(true);
+  return shootResult.ok();
+}
+
+void onShutterOkForController() {
+  showStatusIfChanged("Button A shutter", "BLE SHOT OK", cameraProps.model, cameraProps.battery, true);
+}
+
+void onShutterFailedForController() {
+  Serial.printf("Button A: BLE shutter failed: %s\n", bleCamera.lastError().c_str());
+  showStatusIfChanged("Button A BLE failed", bleCamera.lastError(), "Preview kept", "", true);
+}
+
+bool previewKeptAfterShutterFailureForController() {
+  return appController.isPreviewActive() && grWifi.isConnected() && wifiPreview.isPreviewRunning();
+}
+
+void showCameraSleepGuardStatusForController() {
+  showCameraSleepGuardStatus(false);
+}
+
+bool previewStreamRunningForController() {
+  return wifiPreview.isPreviewRunning();
+}
+
+bool readAndProcessLiveViewFrameForController() {
+  const int readLen = wifiPreview.readFrame(streamReadBuffer, sizeof(streamReadBuffer));
+  if (readLen > 0) {
+    lastLiveViewActivityAt = millis();
+    wifiPreview.processFrameData(streamReadBuffer, static_cast<size_t>(readLen));
+  } else if (readLen < 0) {
+    Serial.printf("LiveView: read failed: %s\n", wifiPreview.lastError().c_str());
+    return false;
+  }
   return true;
+}
+
+void logPreviewStatsForController() {
+  wifiPreview.logStatsIfDue(millis());
+  previewFrameBuffer.syncStreamStats(mjpeg.frames(), mjpeg.droppedFrames(), mjpeg.currentLength());
+  previewFrameBuffer.logStatsIfDue(millis());
+}
+
+uint32_t lastFrameAtForController() {
+  return lastFrameAt;
+}
+
+uint32_t lastLiveViewActivityAtForController() {
+  return lastLiveViewActivityAt;
 }
 
 bool reasonRequiresBleRescan(const char* reason) {
@@ -1013,7 +984,7 @@ bool reasonRequiresBleRescan(const char* reason) {
 
 void disconnectWifiLiveViewToBleReady(const char* reason) {
   closeLiveView(reason != nullptr ? reason : "BLE_READY reset");
-  grWifi.disconnect();
+  wifiPreview.disconnectWifi();
   if (bleCamera.isConnected()) {
     setCameraFlowState(CameraFlowState::BleReady, reason != nullptr ? reason : "BLE still connected");
   } else {
@@ -1021,101 +992,139 @@ void disconnectWifiLiveViewToBleReady(const char* reason) {
   }
 }
 
-bool resumeFromBleReady(const char* reason) {
-  if (cameraSleepGuardBlocksFlow("BLE_READY resume")) {
-    return false;
-  }
-  if (!bleCamera.isConnected()) {
-    if (consumeCameraPowerOffDisconnect("BLE lost before BLE_READY resume")) {
-      return false;
-    }
-    setCameraFlowState(CameraFlowState::BleScan, "BLE lost before BLE_READY resume");
-    return false;
-  }
-
-  disconnectWifiLiveViewToBleReady(reason);
-  for (uint8_t attempt = 0; attempt < WIFI_OPEN_ATTEMPTS; ++attempt) {
-    if (cameraSleepGuardActive()) {
-      return false;
-    }
-    if (!bleCamera.isConnected()) {
-      if (consumeCameraPowerOffDisconnect("BLE lost during WiFi retry")) {
-        return false;
-      }
-      setCameraFlowState(CameraFlowState::BleScan, "BLE lost during WiFi retry");
-      return false;
-    }
-    if (connectWifiAfterBleReady()) {
-      if (liveviewEnabled && startLiveViewFromProbe()) {
-        return true;
-      }
-      if (httpProbeCamera() && startLiveViewFromProbe()) {
-        return true;
-      }
-      disconnectWifiLiveViewToBleReady("HTTP/LiveView retry from BLE_READY");
-    } else if (cameraSleepGuardActive()) {
-      return false;
-    }
-    delay(BLE_CONNECT_RETRY_DELAY_MS);
-    yield();
-  }
-  return false;
-}
-
 void disconnectAllTransportsToBleScan(const char* reason) {
   closeLiveView(reason != nullptr ? reason : "flow reset");
-  grWifi.disconnect();
-  ricohBle.disconnect();
+  wifiPreview.disconnectWifi();
+  bleCamera.disconnect();
   setCameraFlowState(CameraFlowState::BleScan, reason);
 }
 
 void resetBleStackBeforeScanAfterLinkLoss(const char* reason) {
   Serial.printf("BLE recovery: reset stack (%s)\n", reason != nullptr ? reason : "link lost");
   showStatusIfChanged("BLE stack reset", "Camera link lost", preferredBleName(), "Scanning soon", true);
-  ricohBle.resetStack();
+  bleCamera.resetStack();
   delay(BLE_RECOVERY_STACK_RESET_GRACE_MS);
   yield();
 }
 
-bool runCameraFlowOnce() {
-  const uint32_t flowStartMs = millis();
-  if (cameraSleepGuardBlocksFlow("camera flow")) {
-    return false;
-  }
-  setCameraFlowState(CameraFlowState::BleScan, "enter BLE scan mode");
-  if (!runBleDiscoveryAtBoot()) {
-    return false;
-  }
+void delayAndYield(uint32_t delayMs) {
+  delay(delayMs);
+  yield();
+}
 
-  for (uint8_t attempt = 0; attempt < WIFI_OPEN_ATTEMPTS; ++attempt) {
-    if (cameraSleepGuardActive()) {
-      return false;
-    }
-    if (connectWifiAfterBleReady()) {
-      if (liveviewEnabled && startLiveViewFromProbe()) {
-        Serial.printf("Flow: camera online total_ms=%lu\n", static_cast<unsigned long>(millis() - flowStartMs));
-        return true;
-      }
-      if (httpProbeCamera() && startLiveViewFromProbe()) {
-        Serial.printf("Flow: camera online total_ms=%lu\n", static_cast<unsigned long>(millis() - flowStartMs));
-        return true;
-      }
+void disconnectWifiForController() {
+  wifiPreview.disconnectWifi();
+}
 
-      if (bleCamera.isConnected()) {
-        return resumeFromBleReady("HTTP/LiveView unavailable");
-      }
-      disconnectAllTransportsToBleScan("HTTP/LiveView unavailable");
-      return false;
-    }
+void clearBleDisconnectReasonForController() {
+  bleCamera.clearDisconnectReason();
+}
 
-    if (cameraSleepGuardActive()) {
-      return false;
-    }
-    delay(BLE_CONNECT_RETRY_DELAY_MS);
+bool connectCachedWifiFromProfileForController() {
+  if (WIFI_CACHED_CONNECT_GRACE_MS > 0) {
+    Serial.printf("WiFi cache: waiting %lums for camera AP before cached connect\n",
+                  static_cast<unsigned long>(WIFI_CACHED_CONNECT_GRACE_MS));
+    delay(WIFI_CACHED_CONNECT_GRACE_MS);
     yield();
   }
+  Serial.printf("WiFi cache: trying cached params ssid='%s' bssid='%s' channel=%u short_timeout=%lums\n",
+                cameraProfile.wifi.ssid.c_str(),
+                cameraProfile.wifi.bssid.c_str(),
+                static_cast<unsigned>(cameraProfile.wifi.channel),
+                static_cast<unsigned long>(WIFI_CACHED_CONNECT_TIMEOUT_MS));
+  return connectWifiFromProfile(true, true, WIFI_CACHED_CONNECT_TIMEOUT_MS, false);
+}
 
-  return false;
+void onCachedWifiConnectedForController() {
+  saveConnectedWifiBssidToCache("cached connect");
+  scheduleWifiCacheRefresh();
+}
+
+void onCachedWifiConnectFailedForController() {
+  Serial.println("WiFi cache: cached connect failed; reading fresh BLE params");
+}
+
+bool readFreshWifiCredentialsForController() {
+  const rvf::Result wifiCredentialsResult = bleCamera.waitForWifiCredentials(pendingFreshWifiCredentials, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS);
+  if (wifiCredentialsResult.failed()) {
+    showStatusIfChanged("BLE WiFi params", bleCamera.lastError(), "Back to BLE_READY", "", true);
+    return false;
+  }
+  return true;
+}
+
+void applyFreshWifiCredentialsForController() {
+  applyBleWifiCredentials(pendingFreshWifiCredentials, "fresh BLE", false);
+}
+
+bool connectFreshWifiFromProfileForController() {
+  return connectWifiFromProfile(true, true);
+}
+
+void onFreshWifiConnectedForController() {
+  saveConnectedWifiBssidToCache("fresh BLE connect");
+}
+
+rvf::AppFlowActions makeAppFlowActions() {
+  rvf::AppFlowActions actions;
+  actions.cameraSleepGuardBlocksFlow = cameraSleepGuardBlocksFlow;
+  actions.runBleDiscovery = runBleDiscoveryAtBoot;
+  actions.cameraSleepGuardActive = cameraSleepGuardActive;
+  actions.activateCameraWifiOverBle = activateCameraWifiOverBle;
+  actions.disconnectWifi = disconnectWifiForController;
+  actions.clearBleDisconnectReason = clearBleDisconnectReasonForController;
+  actions.hasUsableCachedWifiCredentials = hasUsableCachedWifiCredentials;
+  actions.connectCachedWifiFromProfile = connectCachedWifiFromProfileForController;
+  actions.onCachedWifiConnected = onCachedWifiConnectedForController;
+  actions.onCachedWifiConnectFailed = onCachedWifiConnectFailedForController;
+  actions.readFreshWifiCredentials = readFreshWifiCredentialsForController;
+  actions.applyFreshWifiCredentials = applyFreshWifiCredentialsForController;
+  actions.connectFreshWifiFromProfile = connectFreshWifiFromProfileForController;
+  actions.onFreshWifiConnected = onFreshWifiConnectedForController;
+  actions.isWifiConnected = wifiStillConnectedForController;
+  actions.fetchCameraProps = fetchCameraPropsForController;
+  actions.onHttpProbeSucceeded = onHttpProbeSucceededForController;
+  actions.onHttpProbeFailed = onHttpProbeFailedForController;
+  actions.showStartingLiveView = showStartingLiveViewForController;
+  actions.openLiveView = openLiveViewForController;
+  actions.onLiveViewOpened = onLiveViewOpenedForController;
+  actions.onLiveViewOpenFailed = onLiveViewOpenFailedForController;
+  actions.isBleConnected = bleStillConnectedForWifi;
+  actions.consumePowerOffNotification = consumeCameraPowerOffNotification;
+  actions.consumePowerOffDisconnect = consumeCameraPowerOffDisconnect;
+  actions.disconnectWifiLiveViewToBleReady = disconnectWifiLiveViewToBleReady;
+  actions.disconnectAllTransportsToBleScan = disconnectAllTransportsToBleScan;
+  actions.cameraRecoveryInProgress = cameraRecoveryInProgressForController;
+  actions.setCameraRecoveryInProgress = setCameraRecoveryInProgressForController;
+  actions.reasonRequiresBleRescan = reasonRequiresBleRescan;
+  actions.showRecoveryBleReadyRetry = showRecoveryBleReadyRetryForController;
+  actions.showRecoveryBleScan = showRecoveryBleScanForController;
+  actions.resetBleStackBeforeScanAfterLinkLoss = resetBleStackBeforeScanAfterLinkLoss;
+  actions.shortRecoveryDelay = shortRecoveryDelayForController;
+  actions.onRecoveryGuardBlocked = onRecoveryGuardBlockedForController;
+  actions.onRecoveryFinished = onRecoveryFinishedForController;
+  actions.requestManualCameraWake = requestManualCameraWakeForController;
+  actions.shutterReady = shutterReadyForController;
+  actions.showShutterBleNotReady = showShutterBleNotReadyForController;
+  actions.shootAutofocus = shootAutofocusForController;
+  actions.onShutterOk = onShutterOkForController;
+  actions.onShutterFailed = onShutterFailedForController;
+  actions.previewKeptAfterShutterFailure = previewKeptAfterShutterFailureForController;
+  actions.showCameraSleepGuardStatus = showCameraSleepGuardStatusForController;
+  actions.previewStreamRunning = previewStreamRunningForController;
+  actions.readAndProcessLiveViewFrame = readAndProcessLiveViewFrameForController;
+  actions.logPreviewStats = logPreviewStatsForController;
+  actions.delayAndYield = delayAndYield;
+  actions.lastFrameAt = lastFrameAtForController;
+  actions.lastLiveViewActivityAt = lastLiveViewActivityAtForController;
+  actions.lastCameraRecoveryAt = lastCameraRecoveryAtForController;
+  actions.setLastCameraRecoveryAt = setLastCameraRecoveryAtForController;
+  actions.liveviewEnabled = liveviewEnabled;
+  actions.wifiOpenAttempts = WIFI_OPEN_ATTEMPTS;
+  actions.retryDelayMs = BLE_CONNECT_RETRY_DELAY_MS;
+  actions.bleScanRetryIntervalMs = BLE_SCAN_RETRY_INTERVAL_MS;
+  actions.liveViewStallTimeoutMs = LIVEVIEW_STALL_TIMEOUT_MS;
+  return actions;
 }
 
 void refreshPropsIfDue(bool force = false) {
@@ -1128,11 +1137,11 @@ void refreshPropsIfDue(bool force = false) {
   }
 
   CameraProps nextProps;
-  if (grApi.fetchProps(nextProps, PROPS_TIMEOUT_MS)) {
+  if (wifiPreview.fetchProps(nextProps, PROPS_TIMEOUT_MS).ok()) {
     cameraProps = nextProps;
     lastPropsAt = now;
   } else if (force) {
-    Serial.printf("HTTP: props refresh failed: %s\n", grApi.lastError().c_str());
+    Serial.printf("HTTP: props refresh failed: %s\n", wifiPreview.lastError().c_str());
   }
 }
 
@@ -1154,13 +1163,16 @@ void onJpegFrame(const uint8_t* data, size_t len, void*) {
   lastFrameAt = millis();
   decodedFrames++;
   updateFps();
+  previewFrameBuffer.recordFrame(len);
 
+  const uint32_t renderStartMs = millis();
   if (!decoder.drawFrame(ui.getCanvas(), data, len)) {
     Serial.printf("JPEG decode failed len=%u err=%s\n", static_cast<unsigned>(len), decoder.lastError().c_str());
+    wifiPreview.recordRenderedFrame(decoder.lastDecodeMs(), millis() - renderStartMs);
   } else {
     if (DRAW_LIVE_OVERLAY) {
       ui.drawOverlay(grWifi.statusText(),
-                     grApi.isLiveViewOpen() ? "LIVE" : "IDLE",
+                     wifiPreview.isPreviewRunning() ? "LIVE" : "IDLE",
                      cameraProps.model,
                      cameraProps.battery,
                      currentFps,
@@ -1169,111 +1181,20 @@ void onJpegFrame(const uint8_t* data, size_t len, void*) {
                      mjpeg.droppedFrames());
     }
     ui.pushCanvas();
+    wifiPreview.recordRenderedFrame(decoder.lastDecodeMs(), millis() - renderStartMs);
   }
   lastFrameAt = millis();
-}
-
-void recoverCameraConnection(const char* reason) {
-  if (cameraRecoveryInProgress) {
-    return;
-  }
-
-  cameraRecoveryInProgress = true;
-  Serial.printf("Camera recovery: %s\n", reason != nullptr ? reason : "manual");
-
-  if (!bleCamera.isConnected() && consumeCameraPowerOffDisconnect(reason != nullptr ? reason : "camera recovery")) {
-    cameraRecoveryInProgress = false;
-    return;
-  }
-  if (cameraSleepGuardBlocksFlow(reason != nullptr ? reason : "camera recovery")) {
-    cameraRecoveryInProgress = false;
-    return;
-  }
-
-  bool recovered = false;
-  if (!reasonRequiresBleRescan(reason)) {
-    showStatusIfChanged("Camera recovery", reason != nullptr ? reason : "reconnect", "BLE_READY retry", "", true);
-    recovered = resumeFromBleReady(reason != nullptr ? reason : "camera recovery");
-  }
-
-  if (!recovered && cameraSleepGuardActive()) {
-    lastFrameAt = millis();
-    lastCameraRecoveryAt = millis();
-    cameraRecoveryInProgress = false;
-    return;
-  }
-
-  if (!recovered) {
-    const bool bleLinkAlreadyLost = !bleCamera.isConnected();
-    showStatusIfChanged("Camera recovery", reason != nullptr ? reason : "reconnect", "Back to BLE scan", "", true);
-    disconnectAllTransportsToBleScan(reason != nullptr ? reason : "camera recovery");
-    if (bleLinkAlreadyLost) {
-      resetBleStackBeforeScanAfterLinkLoss(reason != nullptr ? reason : "camera recovery");
-    } else {
-      delay(100);
-    }
-    recovered = runCameraFlowOnce();
-  }
-
-  lastFrameAt = millis();
-  lastCameraRecoveryAt = recovered ? millis() : 0;
-  cameraRecoveryInProgress = false;
-}
-
-void ensureWiFi() {
-  if (cameraFlowState == CameraFlowState::LiveViewRunning && !grWifi.isConnected()) {
-    recoverCameraConnection("WiFi disconnected");
-  }
-}
-
-void ensureLiveView() {
-  if (consumeCameraPowerOffNotification("BLE power notify 0x00")) {
-    return;
-  }
-  if (cameraFlowState != CameraFlowState::LiveViewRunning || !liveviewEnabled) {
-    return;
-  }
-  if (!bleCamera.isConnected()) {
-    if (consumeCameraPowerOffDisconnect("BLE disconnected")) {
-      return;
-    }
-    recoverCameraConnection("BLE disconnected");
-    return;
-  }
-  if (!grWifi.isConnected()) {
-    recoverCameraConnection("WiFi disconnected");
-    return;
-  }
-  if (cameraSleepGuardActive()) {
-    showCameraSleepGuardStatus(false);
-    return;
-  }
-
-  if (!grApi.isLiveViewOpen()) {
-    recoverCameraConnection("LiveView closed");
-    return;
-  }
-
-  const int readLen = grApi.readLiveView(streamReadBuffer, sizeof(streamReadBuffer));
-  if (readLen > 0) {
-    mjpeg.process(streamReadBuffer, static_cast<size_t>(readLen));
-  } else if (readLen < 0) {
-    Serial.printf("LiveView: read failed: %s\n", grApi.lastError().c_str());
-    recoverCameraConnection("LiveView read failed");
-    return;
-  }
-
-  const uint32_t now = millis();
-  if ((now - lastFrameAt) > LIVEVIEW_STALL_TIMEOUT_MS) {
-    recoverCameraConnection("LiveView stall watchdog");
-  }
 }
 
 void requestManualCameraWake(const char* source) {
   if (cameraSleepGuardCooldownActive()) {
-    Serial.printf("BLE guard: manual wake deferred until cooldown completes (%s)\n",
-                  source != nullptr ? source : "manual");
-    showCameraSleepGuardStatus(true);
+    const uint32_t now = millis();
+    if (lastManualWakeDeferredAt == 0 || (now - lastManualWakeDeferredAt) >= MANUAL_WAKE_DEFERRED_LOG_INTERVAL_MS) {
+      lastManualWakeDeferredAt = now;
+      Serial.printf("BLE guard: manual wake deferred until cooldown completes (%s)\n",
+                    source != nullptr ? source : "manual");
+      showCameraSleepGuardStatus(true);
+    }
     return;
   }
 
@@ -1282,18 +1203,18 @@ void requestManualCameraWake(const char* source) {
   cameraManualWakeOverride = true;
   liveviewEnabled = true;
   closeLiveView(wakeSource);
-  grWifi.disconnect();
-  ricohBle.disconnect();
+  wifiPreview.disconnectWifi();
+  bleCamera.disconnect();
   setCameraFlowState(CameraFlowState::BleScan, wakeSource);
   showStatusIfChanged("Manual wake", "Resetting BLE...", preferredBleName(), "", true);
 
   Serial.printf("BLE guard: manual wake BLE stack rebuild (%s)\n", wakeSource);
-  ricohBle.resetStack(true);
+  bleCamera.resetStack(true);
   delay(BLE_MANUAL_WAKE_REINIT_SETTLE_MS);
   yield();
 
   showStatusIfChanged("Manual wake", "Reconnecting...", preferredBleName(), "", true);
-  const bool online = runCameraFlowOnce();
+  const bool online = appController.runCameraFlowOnce(makeAppFlowActions(), millis());
   cameraManualWakeOverride = false;
   lastFrameAt = millis();
   lastCameraRecoveryAt = online ? millis() : 0;
@@ -1309,8 +1230,8 @@ void shutdownStickS3() {
 
   Serial.println("Power: shutdown requested");
   closeLiveView("power off");
-  grWifi.disconnect();
-  ricohBle.disconnect();
+  wifiPreview.disconnectWifi();
+  bleCamera.disconnect();
 
   ui.showBoot("Release PWR...");
   const uint32_t startMs = millis();
@@ -1338,34 +1259,6 @@ void shutdownStickS3() {
   }
 }
 
-void triggerShutterFromButtonA() {
-  if (cameraSleepGuardActive()) {
-    requestManualCameraWake("Button A manual wake");
-    return;
-  }
-
-  if (!bleCamera.shutterReady()) {
-    showStatusIfChanged("Button A shutter", "BLE not ready", "Back to BLE scan", "", true);
-    recoverCameraConnection("Button A shutter BLE not ready");
-    return;
-  }
-
-  showStatusIfChanged("Button A shutter", "BLE shooting...", cameraProps.model, cameraProps.battery, true);
-  if (ricohBle.shoot(true)) {
-    showStatusIfChanged("Button A shutter", "BLE SHOT OK", cameraProps.model, cameraProps.battery, true);
-    return;
-  }
-
-  Serial.printf("Button A: BLE shutter failed: %s\n", bleCamera.lastError().c_str());
-  showStatusIfChanged("Button A BLE failed", bleCamera.lastError(), "Preview kept", "", true);
-
-  if (cameraFlowState == CameraFlowState::LiveViewRunning && grWifi.isConnected() && grApi.isLiveViewOpen()) {
-    return;
-  }
-
-  recoverCameraConnection("Button A BLE shutter failed");
-}
-
 void handleButtons() {
   const ButtonEvents events = buttons.poll();
   const rvf::UserCommand command = rvf::ButtonInput::commandFromEvents(events);
@@ -1376,36 +1269,63 @@ void handleButtons() {
   }
 
   if (command == rvf::UserCommand::Shoot) {
-    triggerShutterFromButtonA();
+    appController.handleUserCommand(makeAppFlowActions(), command);
   }
 }
 
-void serviceCameraFlowIfNeeded() {
-  if (consumeCameraPowerOffNotification("BLE power notify 0x00")) {
-    return;
+const char* appEventTypeName(rvf::AppEventType type) {
+  switch (type) {
+    case rvf::AppEventType::None: return "None";
+    case rvf::AppEventType::BootCompleted: return "BootCompleted";
+    case rvf::AppEventType::BleScanStarted: return "BleScanStarted";
+    case rvf::AppEventType::BleDeviceFound: return "BleDeviceFound";
+    case rvf::AppEventType::BleConnected: return "BleConnected";
+    case rvf::AppEventType::BleDisconnected: return "BleDisconnected";
+    case rvf::AppEventType::CameraPowerOn: return "CameraPowerOn";
+    case rvf::AppEventType::CameraPowerOff: return "CameraPowerOff";
+    case rvf::AppEventType::CameraPowerUnknown: return "CameraPowerUnknown";
+    case rvf::AppEventType::WifiActivationRequested: return "WifiActivationRequested";
+    case rvf::AppEventType::WifiConnected: return "WifiConnected";
+    case rvf::AppEventType::WifiDisconnected: return "WifiDisconnected";
+    case rvf::AppEventType::HttpProbeSucceeded: return "HttpProbeSucceeded";
+    case rvf::AppEventType::HttpProbeFailed: return "HttpProbeFailed";
+    case rvf::AppEventType::PreviewStarted: return "PreviewStarted";
+    case rvf::AppEventType::PreviewStopped: return "PreviewStopped";
+    case rvf::AppEventType::PreviewTimeout: return "PreviewTimeout";
+    case rvf::AppEventType::ButtonShortPress: return "ButtonShortPress";
+    case rvf::AppEventType::ButtonLongPress: return "ButtonLongPress";
+    case rvf::AppEventType::ShutterPressed: return "ShutterPressed";
+    case rvf::AppEventType::ErrorRaised: return "ErrorRaised";
   }
-  if (cameraRecoveryInProgress || cameraFlowState == CameraFlowState::LiveViewRunning) {
+  return "Unknown";
+}
+
+rvf::SystemHealthSnapshot makeSystemHealthSnapshot() {
+  rvf::SystemHealthSnapshot snapshot;
+  snapshot.appState = appController.state();
+  snapshot.bleConnected = bleCamera.isConnected();
+  snapshot.wifiConnected = grWifi.isConnected();
+  snapshot.previewRunning = wifiPreview.isPreviewRunning();
+  snapshot.liveviewEnabled = liveviewEnabled;
+  snapshot.cameraSleepGuardActive = cameraSleepGuardActive();
+  snapshot.cameraRecoveryInProgress = cameraRecoveryInProgress;
+  snapshot.lastFrameAt = lastFrameAt;
+  snapshot.lastLiveViewActivityAt = lastLiveViewActivityAt;
+  snapshot.liveViewStallTimeoutMs = LIVEVIEW_STALL_TIMEOUT_MS;
+  return snapshot;
+}
+
+void serviceSystemSupervisor(uint32_t nowMs) {
+  rvf::AppMessage message;
+  if (!systemSupervisor.check(nowMs, makeSystemHealthSnapshot(), message)) {
     return;
   }
 
-  if (!bleCamera.isConnected() && consumeCameraPowerOffDisconnect("scheduled service")) {
-    return;
-  }
-  if (cameraSleepGuardBlocksFlow("scheduled service")) {
-    return;
-  }
-
-  const uint32_t now = millis();
-  if ((now - lastCameraRecoveryAt) < BLE_SCAN_RETRY_INTERVAL_MS) {
-    return;
-  }
-  lastCameraRecoveryAt = now;
-  const bool online = (cameraFlowState == CameraFlowState::BleReady && bleCamera.isConnected())
-                        ? resumeFromBleReady("BLE_READY scheduled retry")
-                        : runCameraFlowOnce();
-  if (!online) {
-    lastCameraRecoveryAt = 0;
-  }
+  Serial.printf("Supervisor: event=%s state=%s code=%d detail=%s\n",
+                appEventTypeName(message.type),
+                rvf::appStateName(appController.state()),
+                message.code,
+                message.detail != nullptr ? message.detail : "");
 }
 
 void updateStatusUiIfDue() {
@@ -1420,7 +1340,7 @@ void updateStatusUiIfDue() {
     return;
   }
 
-  if (!grApi.isLiveViewOpen()) {
+  if (!wifiPreview.isPreviewRunning()) {
     showStatusIfChanged(grWifi.statusText(),
                         liveviewEnabled ? grWifi.localIPString() : "Preview paused",
                         cameraProps.model,
@@ -1428,10 +1348,43 @@ void updateStatusUiIfDue() {
   }
 }
 
+void runAppTick() {
+  const uint32_t now = millis();
+  const rvf::AppTickPlan tickPlan = appController.planTick(now);
+
+  if (tickPlan.handleButtons) {
+    handleButtons();
+  }
+  const uint32_t controllerNow = millis();
+  const rvf::AppFlowActions actions = makeAppFlowActions();
+  if (tickPlan.serviceCameraFlow) {
+    appController.serviceCameraFlowIfNeeded(actions, controllerNow);
+  }
+  if (tickPlan.monitorWifi) {
+    appController.monitorWifi(actions);
+  }
+  if (tickPlan.refreshProps) {
+    refreshPropsIfDue();
+  }
+  if (tickPlan.monitorLiveView) {
+    appController.monitorLiveView(actions, controllerNow);
+  }
+  serviceSystemSupervisor(millis());
+  if (tickPlan.refreshWifiCache) {
+    refreshWifiCacheIfDue();
+  }
+  if (tickPlan.updateStatusUi) {
+    updateStatusUiIfDue();
+  }
+  delay(1);
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(rvf::AppConfig::SerialPort::kBaud);
+  appController.begin(CameraFlowState::BleScan);
+  systemSupervisor.begin(millis());
 
   ui.begin();
   ui.showBoot(rvf::AppConfig::Ui::kBootMessage);
@@ -1449,8 +1402,10 @@ void setup() {
     ui.showError("PSRAM not found");
   }
 
+  rvf::PreviewFrameBufferStorage frameBufferStorage = rvf::PreviewFrameBufferStorage::Psram;
   frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(rvf::AppConfig::Buffer::kFrameBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (frameBuffer == nullptr) {
+    frameBufferStorage = rvf::PreviewFrameBufferStorage::InternalRam;
     frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(rvf::AppConfig::Buffer::kFrameBufferSize, MALLOC_CAP_8BIT));
   }
   if (frameBuffer == nullptr) {
@@ -1461,21 +1416,22 @@ void setup() {
     }
   }
 
-  mjpeg.begin(frameBuffer, rvf::AppConfig::Buffer::kFrameBufferSize, onJpegFrame, nullptr);
+  if (!previewFrameBuffer.attach(frameBuffer, rvf::AppConfig::Buffer::kFrameBufferSize, frameBufferStorage)) {
+    LOGLINE_E("FRAME", "Failed to attach JPEG frame buffer");
+    ui.showError("Frame buffer attach failed");
+    while (true) {
+      delay(1000);
+    }
+  }
+  mjpeg.begin(previewFrameBuffer.data(), previewFrameBuffer.capacity(), onJpegFrame, nullptr);
 
-  const bool startupOnline = runCameraFlowOnce();
+  const bool startupOnline = appController.runCameraFlowOnce(makeAppFlowActions(), millis());
   lastCameraRecoveryAt = startupOnline ? millis() : 0;
   lastFrameAt = millis();
+  lastLiveViewActivityAt = lastFrameAt;
   lastStatusAt = 0;
 }
 
 void loop() {
-  handleButtons();
-  serviceCameraFlowIfNeeded();
-  ensureWiFi();
-  refreshPropsIfDue();
-  ensureLiveView();
-  refreshWifiCacheIfDue();
-  updateStatusUiIfDue();
-  delay(1);
+  runAppTick();
 }

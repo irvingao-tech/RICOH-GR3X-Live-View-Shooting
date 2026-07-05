@@ -5,9 +5,14 @@
 
 #include <unity.h>
 
+void setUp(void) {}
+void tearDown(void) {}
+
 #include "ble_reconnect_policy.h"
+
 #include "camera_identity.h"
 #include "mjpeg_stream.h"
+#include "supervisor/SystemSupervisor.h"
 
 namespace {
 
@@ -148,6 +153,66 @@ void testRequiresBleAddressAndAddressTypeForDirectReconnect() {
   TEST_ASSERT_FALSE(hasDirectBleReconnectIdentity(nullptr, true));
 }
 
+rvf::SystemHealthSnapshot healthyPreviewSnapshot() {
+  rvf::SystemHealthSnapshot snapshot;
+  snapshot.appState = rvf::AppState::PreviewRunning;
+  snapshot.bleConnected = true;
+  snapshot.wifiConnected = true;
+  snapshot.previewRunning = true;
+  snapshot.liveviewEnabled = true;
+  snapshot.lastFrameAt = 1000;
+  snapshot.lastLiveViewActivityAt = 1000;
+  snapshot.liveViewStallTimeoutMs = 5000;
+  return snapshot;
+}
+
+void testSupervisorWaitsForIntervalAndIgnoresHealthyPreview() {
+  rvf::SystemSupervisor supervisor;
+  rvf::AppMessage message;
+  supervisor.begin(1000);
+
+  TEST_ASSERT_FALSE(supervisor.check(1999, healthyPreviewSnapshot(), message));
+  TEST_ASSERT_FALSE(supervisor.check(2000, healthyPreviewSnapshot(), message));
+}
+
+void testSupervisorReportsPreviewClosed() {
+  rvf::SystemSupervisor supervisor;
+  rvf::AppMessage message;
+  rvf::SystemHealthSnapshot snapshot = healthyPreviewSnapshot();
+  snapshot.previewRunning = false;
+  supervisor.begin(0);
+
+  TEST_ASSERT_TRUE(supervisor.check(1000, snapshot, message));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(rvf::AppEventType::PreviewStopped), static_cast<int>(message.type));
+  TEST_ASSERT_EQUAL_STRING("supervisor preview closed", message.detail);
+}
+
+void testSupervisorIgnoresCameraSleepGuard() {
+  rvf::SystemSupervisor supervisor;
+  rvf::AppMessage message;
+  rvf::SystemHealthSnapshot snapshot = healthyPreviewSnapshot();
+  snapshot.previewRunning = false;
+  snapshot.cameraSleepGuardActive = true;
+  supervisor.begin(0);
+
+  TEST_ASSERT_FALSE(supervisor.check(1000, snapshot, message));
+}
+
+void testSupervisorReportsPreviewIdleTimeout() {
+  rvf::SystemSupervisor supervisor;
+  rvf::AppMessage message;
+  rvf::SystemHealthSnapshot snapshot = healthyPreviewSnapshot();
+  snapshot.lastFrameAt = 1000;
+  snapshot.lastLiveViewActivityAt = 1000;
+  snapshot.liveViewStallTimeoutMs = 5000;
+  supervisor.begin(0);
+
+  TEST_ASSERT_TRUE(supervisor.check(7001, snapshot, message));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(rvf::AppEventType::PreviewTimeout), static_cast<int>(message.type));
+  TEST_ASSERT_EQUAL_INT(6001, message.code);
+  TEST_ASSERT_EQUAL_STRING("supervisor preview idle", message.detail);
+}
+
 }  // namespace
 
 int main() {
@@ -161,5 +226,9 @@ int main() {
   RUN_TEST(testLeavesNonNumericRicohWifiSsidUnchanged);
   RUN_TEST(testRejectsNonRicohWifiSsidForBleName);
   RUN_TEST(testRequiresBleAddressAndAddressTypeForDirectReconnect);
+  RUN_TEST(testSupervisorWaitsForIntervalAndIgnoresHealthyPreview);
+  RUN_TEST(testSupervisorReportsPreviewClosed);
+  RUN_TEST(testSupervisorIgnoresCameraSleepGuard);
+  RUN_TEST(testSupervisorReportsPreviewIdleTimeout);
   return UNITY_END();
 }
