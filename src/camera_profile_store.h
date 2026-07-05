@@ -30,6 +30,7 @@ public:
   bool save(const CameraProfile& profile);
   bool saveWifiCredentials(const String& bleAddress, const WifiCredential& wifi);
   bool clearWifiCredentials();
+  bool clearBlePairing();
   bool saveBleIdentity(const String& cameraName, const String& bleAddress);
   bool saveBleIdentity(const String& cameraName, const String& bleAddress, uint8_t bleAddressType, bool bleBonded);
   bool clear();

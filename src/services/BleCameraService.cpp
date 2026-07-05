@@ -242,6 +242,19 @@ void BleCameraService::clearDisconnectReason() {
     }
 }
 
+Result BleCameraService::deleteAllBonds() {
+    Result ready = requireClient("deleteAllBonds");
+    if (ready.failed()) {
+        publish(AppEventType::ErrorRaised, static_cast<int>(ready.code), "deleteAllBonds");
+        return ready;
+    }
+    if (!_client->deleteAllBonds()) {
+        publish(AppEventType::ErrorRaised, static_cast<int>(ErrorCode::Unknown), "deleteAllBonds");
+        return Result::failure(ErrorCode::Unknown, _client->lastError());
+    }
+    return Result::success();
+}
+
 void BleCameraService::resetStack(bool clearObjects) {
     if (_client != nullptr) {
         _client->resetStack(clearObjects);

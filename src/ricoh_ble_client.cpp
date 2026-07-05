@@ -40,6 +40,7 @@ std::atomic<int> g_lastDisconnectReason{0};
 std::atomic<int> g_powerOffDisconnectReason{0};
 std::atomic<int> g_powerStateNotifyValue{-1};
 std::atomic<bool> g_powerOffNotifyPending{false};
+RicohBleClient::ServiceCallback g_serviceCallback = nullptr;
 
 constexpr uint8_t RICOH_SHOOTING_FLAVOR_IMMEDIATE = 0x00;
 constexpr uint8_t RICOH_OPERATION_START = 0x01;
@@ -787,6 +788,10 @@ bool waitForEncryptedConnection(NimBLEClient* client, uint32_t timeoutMs, String
 
   const uint32_t startMs = millis();
   while (client->isConnected() && (millis() - startMs) < timeoutMs) {
+    if (g_serviceCallback != nullptr && g_serviceCallback()) {
+      errorOut = "BLE operation aborted";
+      return false;
+    }
     NimBLEConnInfo info = client->getConnInfo();
     if (info.isEncrypted()) {
       errorOut = "";
@@ -815,6 +820,10 @@ void RicohBleClient::begin() {
   Serial.printf("BLE: NimBLE initialized (%s)\n", NimBLEDevice::getVersion());
 }
 
+void RicohBleClient::setServiceCallback(ServiceCallback callback) {
+  g_serviceCallback = callback;
+}
+
 RicohBleDeviceInfo RicohBleClient::scanForCamera(const String& preferredAddress,
                                                  const String& preferredName,
                                                  uint32_t scanSeconds) {
@@ -840,6 +849,13 @@ RicohBleDeviceInfo RicohBleClient::scanForCamera(const String& preferredAddress,
 
   const uint32_t startMs = millis();
   while (scan->isScanning() && (millis() - startMs) < durationMs + 200) {
+    if (g_serviceCallback != nullptr && g_serviceCallback()) {
+      scan->stop();
+      scan->setScanCallbacks(nullptr, false);
+      scan->clearResults();
+      _lastError = "BLE scan aborted";
+      return RicohBleDeviceInfo{};
+    }
     if (callbacks.foundPreferred()) {
       scan->stop();
       break;
@@ -848,6 +864,13 @@ RicohBleDeviceInfo RicohBleClient::scanForCamera(const String& preferredAddress,
     yield();
   }
   while (scan->isScanning() && (millis() - startMs) < durationMs + 1000) {
+    if (g_serviceCallback != nullptr && g_serviceCallback()) {
+      scan->stop();
+      scan->setScanCallbacks(nullptr, false);
+      scan->clearResults();
+      _lastError = "BLE scan aborted";
+      return RicohBleDeviceInfo{};
+    }
     delay(10);
     yield();
   }
@@ -1263,6 +1286,21 @@ void RicohBleClient::clearDisconnectReason() {
   g_powerOffDisconnectReason.store(0);
   g_powerStateNotifyValue.store(-1);
   g_powerOffNotifyPending.store(false);
+}
+
+bool RicohBleClient::deleteAllBonds() {
+  begin();
+  disconnect();
+  const int before = NimBLEDevice::getNumBonds();
+  const bool ok = NimBLEDevice::deleteAllBonds();
+  const int after = NimBLEDevice::getNumBonds();
+  Serial.printf("BLE: delete all bonds before=%d after=%d ok=%d\n", before, after, ok ? 1 : 0);
+  if (!ok) {
+    _lastError = "NimBLE deleteAllBonds failed";
+    return false;
+  }
+  _lastError = "";
+  return true;
 }
 
 void RicohBleClient::resetStack(bool clearObjects) {

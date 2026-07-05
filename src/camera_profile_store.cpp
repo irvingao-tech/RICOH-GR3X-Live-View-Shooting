@@ -101,6 +101,19 @@ bool CameraProfileStore::clearWifiCredentials() {
   return true;
 }
 
+bool CameraProfileStore::clearBlePairing() {
+  if (!begin()) {
+    return false;
+  }
+
+  _prefs.remove("cam_name");
+  _prefs.remove("ble_addr");
+  _prefs.remove("ble_addr_type");
+  _prefs.remove("ble_bonded");
+  clearWifiCredentialKeys(_prefs);
+  return true;
+}
+
 bool CameraProfileStore::saveBleIdentity(const String& cameraName, const String& bleAddress) {
   if (!begin()) {
     return false;

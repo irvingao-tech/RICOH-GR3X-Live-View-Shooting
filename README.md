@@ -36,6 +36,7 @@
 * **智能休眠防误唤醒**：读取相机 `Power State` 和 `Operation Mode` 以确认真实运行状态，防止意外唤醒关机状态下的相机。
 * **WLAN 动态参数缓存**：首次连接后，将相机的 Wi-Fi SSID、BSSID、信道及加密参数持久化写入 NVS，在下次启动时最快以 `<0.5s` 的极速完成直连。
 * **物理按键 AF 遥控快门**：支持理光官方 BLE Shooting Service 协议，通过 Button A 进行高精度自动对焦与瞬间抓拍。
+* **KEY2 / Button B 清除配对**：长按 KEY2 / Button B 3 秒，清除已保存的 BLE 身份、Wi-Fi 缓存和 NimBLE bond key，并重新进入 GR BLE 扫描配对。
 * **完整 Native 测试套件**：无需依赖 StickS3 硬件，即可在 Host 端运行核心数据解析和状态转换的本地测试。
 
 ---
@@ -66,12 +67,13 @@ platformio run --target upload --upload-port COM6
 
 ## 控制操作指南 (Controls)
 
-您可以通过 StickS3 的侧边 Button A 和电源按键来完全控制固件的行为：
+您可以通过 StickS3 的侧边 Button A、Button B / KEY2 和电源按键来完全控制固件的行为：
 
 | 实体按键 | 状态场景 | 触发行为描述 |
 | :--- | :--- | :--- |
 | **Button A** | 实时预览中 (`LIVEVIEW_RUNNING`) | 触发 BLE 自动对焦 (AF) 并进行抓拍 (写入 `ShootingFlavor=IMMEDIATE`) |
 | **Button A** | 防误唤醒休眠状态 (`CAMERA_SLEEP_GUARD`) | 手动清除 Guard 冷却，强行重建 BLE 连接栈并唤醒/重连相机 |
+| **Button B / KEY2** | 任意状态，包括 BLE 扫描/重连等待中 (长按 3 秒) | 清除本机保存的 BLE 配对、Wi-Fi 缓存和 NimBLE bond，然后重新扫描 GR BLE |
 | **电源键 (BtnPWR)** | 任意状态下 (长按) | 优雅断开 Wi-Fi 局域网与 BLE 连接，关闭 LiveView 取景，StickS3 关机 |
 
 ---
@@ -114,6 +116,8 @@ graph TD
     L --> S[防误唤醒状态: 15s冷却期后等待 Button A 手动唤醒]
     S -->|按 Button A| T[重建 BLE 栈并重新连接]
     T --> D
+    R -->|长按 Button B / KEY2 3秒| U[清除 BLE 配对和 Bond]
+    U --> E
 ```
 
 ### 3. 相机关机与休眠保护 (Standby Guard)
@@ -121,6 +125,18 @@ graph TD
 1. 系统会立即主动切断 Wi-Fi 连接和 BLE 物理层，避免占用通道。
 2. 自动状态机流转到 `CAMERA_SLEEP_GUARD`，并开启 **15 秒安全冷却期**。
 3. 在冷却期及后续静默状态中，**绝不会自动唤醒相机**，直到用户物理按下 StickS3 的 Button A 触发主动唤醒。
+
+### 4. 配对失效后的 KEY2 重置恢复
+如果用户在相机端删除了 StickS3 的蓝牙配对记录，但 StickS3 本地仍保留旧 BLE 地址、bonded 状态和 NimBLE bond key，固件可能会持续尝试旧身份直连。此时长按 **Button B / KEY2 3 秒**可以清除配对并重新扫描。
+
+该流程会：
+1. 停止 LiveView，并断开 Wi-Fi / BLE。
+2. 清除 NVS 中的 BLE 身份：`cam_name`、`ble_addr`、`ble_addr_type`、`ble_bonded`。
+3. 清除与该身份绑定的 Wi-Fi 缓存：`wifi_valid`、`wifi_ble_addr`、`wifi_ssid`、`wifi_pass`、`wifi_bssid`、`wifi_freq`、`wifi_ch`。
+4. 调用 NimBLE `deleteAllBonds()` 删除 ESP32 BLE 栈中的 bond key。
+5. 重建 BLE 栈并回到 `BLE_SCAN`，屏幕依次提示 `Reset pairing`、`Clearing BLE...`、`Scanning GR BLE`。
+
+KEY2 在 BLE 扫描和安全等待循环中也会被轮询，因此设备长时间重连失败时仍可触发清除配对。
 
 ---
 
@@ -136,6 +152,9 @@ graph TD
 | `BLE_CONNECT_ATTEMPTS` | `12` | 存在已配对身份时的最大直连尝试轮数 |
 | `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | `1500` | 已绑定设备建立连接后，等待安全加密完成的等待延时 |
 | `RICOH_BLE_SECURITY_WAIT_MS` | `7000` | 首次配对时，等待安全加密完成的最大超时 |
+| `RICOH_BLE_POWER_NOTIFY_SETTLE_MS` | `30` | 开启 Power Notify 后的短暂等待窗口，用于在 Wi-Fi ON 前捕获立即到来的关机通知 |
+| `KEY2_PAIRING_RESET_HOLD_MS` | `3000` | KEY2 / Button B 触发清除 BLE 配对所需的长按时间 |
+| `KEY2_FALLBACK_GPIO` | `12` | `M5.BtnB` 不可用时使用的 KEY2 GPIO fallback |
 | `WIFI_CACHED_CONNECT_GRACE_MS` | `700` | 发出 Wi-Fi 开启请求后，进行缓存快速连接前的过渡等待 |
 | `WIFI_CACHED_CONNECT_TIMEOUT_MS` | `1200` | 缓存 Wi-Fi 参数连接时的超短超时时间 (用于极速直连) |
 | `WIFI_CONNECT_TIMEOUT_MS` | `15000` | Wi-Fi 连接建立的全局超时时间上限 |
@@ -213,6 +232,19 @@ SystemSupervisor: liveview stall detected! Requesting system recovery.
 Flow: LIVEVIEW_RUNNING -> BLE_READY (Resetting connections)
 ...
 ```
+
+### 4. KEY2 清除 BLE 配对并重新扫描
+适用于相机端已经删除 StickS3 蓝牙配对，但 StickS3 仍在使用旧 BLE 身份快速直连的场景。
+
+```text
+BLE pairing reset: requested during BLE operation
+BLE pairing reset: Button B / KEY2 long press
+Profile: BLE pairing keys cleared ok=1
+BLE: delete all bonds before=1 after=0 ok=1
+Flow: LIVEVIEW_RUNNING -> BLE_SCAN (Reset pairing)
+```
+
+预期屏幕提示顺序：`Reset pairing` -> `Clearing BLE...` -> `Scanning GR BLE`。
 
 ---
 

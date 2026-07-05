@@ -50,7 +50,10 @@ enum class RicohCameraOperationMode {
 
 class RicohBleClient {
 public:
+  using ServiceCallback = bool (*)();
+
   void begin();
+  void setServiceCallback(ServiceCallback callback);
   RicohBleDeviceInfo scanForCamera(const String& preferredAddress, const String& preferredName, uint32_t scanSeconds);
   bool connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs);
   bool connect(const RicohBleDeviceInfo& info, const RicohBleConnectOptions& options);
@@ -67,6 +70,7 @@ public:
   void disconnect();
   int consumeDisconnectReason();
   void clearDisconnectReason();
+  bool deleteAllBonds();
   void resetStack(bool clearObjects = false);
   bool lastFailureWasResourceExhausted() const;
 

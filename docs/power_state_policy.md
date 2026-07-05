@@ -17,6 +17,7 @@
 | `RICOH_BLE_DISCONNECT_REMOTE_USER` | `0x213` | power-off/user remote disconnect candidate |
 | `RICOH_BLE_DISCONNECT_REMOTE_POWER_OFF` | `0x215` | power-off disconnect candidate |
 | `CAMERA_POWER_OFF_COOLDOWN_MS` | `15000` | guard cooldown |
+| `RICOH_BLE_POWER_NOTIFY_SETTLE_MS` | `30` | 订阅 Power Notify 后的短等待窗口，用于在 Wi-Fi ON 前消费立即到来的 `0x00` 关机通知 |
 | `RICOH_BLE_REQUIRE_POWER_ON_BEFORE_WIFI` | `true` | Wi-Fi ON 前必须读电源 |
 | `RICOH_BLE_ALLOW_WIFI_WHEN_POWER_UNKNOWN` | `false` | power unknown 不允许 Wi-Fi ON |
 | `RICOH_BLE_BLOCK_WIFI_IN_STANDBY_OPERATION_MODE` | `true` | standby operation mode 阻止 Wi-Fi ON |
@@ -42,8 +43,10 @@
 3. 读取 Power State，最多 `RICOH_BLE_POWER_READ_RETRIES=2`。
 4. 如果 Power State 为 On 且启用 standby check，则读取 Operation Mode，最多 `RICOH_BLE_OPERATION_MODE_READ_RETRIES=2`。
 5. 如果 Operation Mode 是 `BLE_STARTUP` / `POWER_OFF_TRANSFER` 且不是 manual wake override，则进入 `CAMERA_SLEEP_GUARD`，不打开 Wi-Fi。
-6. 如果 Power State On，订阅 power notify，再允许 Wi-Fi ON。
-7. Power Off 或 Unknown 且没有 override 时进入 guard。
+6. 如果 Power State On，订阅 power notify。
+7. 订阅后等待 `RICOH_BLE_POWER_NOTIFY_SETTLE_MS=30`，并消费这段时间内到达的 Power Off notify；若收到 `0x00`，进入 `CAMERA_SLEEP_GUARD`，不打开 Wi-Fi。
+8. 没有收到 Power Off notify 时才允许 Wi-Fi ON。
+9. Power Off 或 Unknown 且没有 override 时进入 guard。
 
 ## CAMERA_SLEEP_GUARD 行为
 
@@ -69,6 +72,7 @@ Button A 手动唤醒：
 - 自动恢复路径不得绕过 `cameraSleepGuardBlocksFlow()`。
 - BLE 断连 reason `0x213` / `0x215` 在 ready/liveview 阶段必须进入 guard。
 - Power notify `0x00` 必须进入 guard。
+- 开 Wi-Fi 前不得跳过 Power Notify settle；否则相机刚关机时可能读到旧的 Power On 后立刻收到 `0x00`，导致误开 Wi-Fi。
 
 ## TODO_UNVERIFIED
 

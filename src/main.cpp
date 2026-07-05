@@ -58,6 +58,8 @@ bool powerButtonHoldReported = false;
 bool stickPowerReady = false;
 uint32_t lastCameraRecoveryAt = 0;
 bool cameraRecoveryInProgress = false;
+bool setupCameraFlowActive = false;
+bool key2PairingResetRequested = false;
 bool cameraAutoWakeBlocked = false;
 uint32_t cameraAutoWakeCooldownUntil = 0;
 int cameraAutoWakeDisconnectReason = 0;
@@ -83,6 +85,7 @@ constexpr uint32_t MANUAL_WAKE_DEFERRED_LOG_INTERVAL_MS = 1000;
 constexpr bool DRAW_LIVE_OVERLAY = true;
 
 void requestManualCameraWake(const char* source);
+void resetBlePairingFromKey2();
 rvf::AppFlowActions makeAppFlowActions();
 
 bool beginStickPower() {
@@ -317,6 +320,14 @@ bool consumeCameraPowerOffNotification(const char* source) {
   return true;
 }
 
+bool settleAndConsumeCameraPowerOffNotification(const char* source) {
+  if (RICOH_BLE_POWER_NOTIFY_SETTLE_MS > 0) {
+    delay(RICOH_BLE_POWER_NOTIFY_SETTLE_MS);
+    yield();
+  }
+  return consumeCameraPowerOffNotification(source);
+}
+
 bool consumeCameraPowerOffDisconnect(const char* source) {
   const int reason = bleCamera.consumeDisconnectReason();
   if (!isCameraPowerOffDisconnectReason(reason)) {
@@ -346,7 +357,7 @@ bool consumeCameraPowerOffDisconnectAfterReady(const char* source) {
 
 void clearCameraSleepGuard(const char* source) {
   if (cameraAutoWakeBlocked) {
-    Serial.printf("BLE guard: manual wake requested (%s), previous disconnect reason=%d\n",
+    Serial.printf("BLE guard: clearing guard (%s), previous disconnect reason=%d\n",
                   source != nullptr ? source : "manual",
                   cameraAutoWakeDisconnectReason);
   }
@@ -573,7 +584,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     if (powerNotifyResult.failed()) {
       Serial.printf("BLE: power notify subscribe failed: %s\n", bleCamera.lastError().c_str());
     }
-    if (consumeCameraPowerOffNotification("BLE power notify before WiFi allow")) {
+    if (settleAndConsumeCameraPowerOffNotification("BLE power notify before WiFi allow")) {
       return false;
     }
     return true;
@@ -585,6 +596,9 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
       const rvf::Result powerNotifyResult = bleCamera.enablePowerStateNotify();
       if (powerNotifyResult.failed()) {
         Serial.printf("BLE: power notify subscribe failed: %s\n", bleCamera.lastError().c_str());
+      }
+      if (settleAndConsumeCameraPowerOffNotification("BLE power notify before manual WiFi allow")) {
+        return false;
       }
     }
     return true;
@@ -623,7 +637,7 @@ bool activateCameraWifiOverBle() {
   if (!ensureCameraPowerReadyForWifi("WiFi open")) {
     return false;
   }
-  if (consumeCameraPowerOffNotification("BLE power notify before WiFi open")) {
+  if (settleAndConsumeCameraPowerOffNotification("BLE power notify before WiFi open")) {
     return false;
   }
 
@@ -668,17 +682,43 @@ void saveConnectedBleIdentity(const String& connectedName, const RicohBleDeviceI
                                cameraProfile.bleBonded);
 }
 
+bool serviceButtonsDuringBleOperation() {
+  const ButtonEvents events = buttons.poll();
+  if (!events.resetPairing) {
+    return false;
+  }
+
+  key2PairingResetRequested = true;
+  Serial.println("BLE pairing reset: requested during BLE operation");
+  return true;
+}
+
+bool resetBlePairingIfRequested() {
+  if (!key2PairingResetRequested) {
+    return false;
+  }
+  key2PairingResetRequested = false;
+  resetBlePairingFromKey2();
+  return true;
+}
+
 bool runBleDiscoveryAtBoot() {
   if (cameraSleepGuardBlocksFlow("BLE discovery")) {
     return false;
   }
   const bool firstBootPairing = !hasStoredBleIdentity();
-  const uint8_t configuredAttempts = firstBootPairing ? FIRST_BOOT_BLE_PAIRING_ATTEMPTS : BLE_CONNECT_ATTEMPTS;
+  const uint8_t configuredAttempts = firstBootPairing
+                                       ? FIRST_BOOT_BLE_PAIRING_ATTEMPTS
+                                       : (setupCameraFlowActive ? 1 : BLE_CONNECT_ATTEMPTS);
   const uint8_t attempts = configuredAttempts == 0 ? 1 : configuredAttempts;
   uint8_t consecutiveConnectFailures = 0;
 
   if (firstBootPairing) {
     Serial.printf("BLE: no stored identity; pairing scan up to %u rounds\n", static_cast<unsigned>(attempts));
+  } else if (setupCameraFlowActive) {
+    Serial.printf("BLE: stored identity; setup quick scan preferred address='%s' name='%s'\n",
+                  cameraProfile.bleAddress.c_str(),
+                  preferredBleName().c_str());
   } else {
     Serial.printf("BLE: stored identity; scanning preferred address='%s' name='%s'\n",
                   cameraProfile.bleAddress.c_str(),
@@ -686,6 +726,9 @@ bool runBleDiscoveryAtBoot() {
   }
 
   for (uint8_t attempt = 1; attempt <= attempts; ++attempt) {
+    if (resetBlePairingIfRequested()) {
+      return false;
+    }
     bool skipRetryDelay = false;
     const String bleName = preferredBleName();
     setCameraFlowState(CameraFlowState::ScanningCamera, "BLE discovery");
@@ -696,6 +739,9 @@ bool runBleDiscoveryAtBoot() {
                         true);
 
     RicohBleDeviceInfo info = bleCamera.scanCamera(cameraProfile.bleAddress, bleName, BLE_SCAN_SECONDS);
+    if (resetBlePairingIfRequested()) {
+      return false;
+    }
     if (!info.found) {
       showStatusIfChanged("BLE not found", "Retrying...", "", "", true);
     } else if (!info.connectable) {
@@ -715,6 +761,9 @@ bool runBleDiscoveryAtBoot() {
       options.exchangeMtu = false;
 
       const rvf::Result connectResult = bleCamera.connectCamera(info, options);
+      if (resetBlePairingIfRequested()) {
+        return false;
+      }
       if (connectResult.ok()) {
         saveConnectedBleIdentity(connectedName, info);
         showStatusIfChanged("BLE link ready", cameraProfile.cameraName, info.address, "WiFi via BLE", true);
@@ -747,6 +796,9 @@ bool runBleDiscoveryAtBoot() {
     if (attempt < attempts && !skipRetryDelay) {
       delay(BLE_CONNECT_RETRY_DELAY_MS);
       yield();
+      if (resetBlePairingIfRequested()) {
+        return false;
+      }
     }
   }
 
@@ -1186,6 +1238,52 @@ void onJpegFrame(const uint8_t* data, size_t len, void*) {
   lastFrameAt = millis();
 }
 
+void resetBlePairingFromKey2() {
+  static bool resettingPairing = false;
+  if (resettingPairing) {
+    return;
+  }
+  resettingPairing = true;
+  cameraRecoveryInProgress = true;
+
+  Serial.println("BLE pairing reset: Button B / KEY2 long press");
+  showStatusIfChanged("Reset pairing", "Clearing BLE...", "", "", true);
+
+  closeLiveView("Reset pairing");
+  wifiPreview.disconnectWifi();
+  bleCamera.disconnect();
+  clearCameraSleepGuard("Reset pairing");
+
+  const bool profileCleared = profileStore.clearBlePairing();
+  Serial.printf("Profile: BLE pairing keys cleared ok=%d\n", profileCleared ? 1 : 0);
+
+  const String cameraIp = cameraProfile.wifi.cameraIp.length() > 0 ? cameraProfile.wifi.cameraIp : String(GR_HOST);
+  cameraProfile = CameraProfile{};
+  cameraProfile.wifi.cameraIp = cameraIp;
+  wifiPreview.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
+  pendingFreshWifiCredentials = RicohBleWifiCredentials{};
+  wifiCacheRefreshPending = false;
+  cameraProps = CameraProps{};
+  pendingCameraProps = CameraProps{};
+  lastPropsAt = 0;
+  liveviewEnabled = true;
+
+  const rvf::Result deleteBondsResult = bleCamera.deleteAllBonds();
+  if (deleteBondsResult.failed()) {
+    Serial.printf("BLE pairing reset: NimBLE bond delete failed: %s\n", bleCamera.lastError().c_str());
+  }
+  bleCamera.clearDisconnectReason();
+  bleCamera.resetStack(true);
+
+  showStatusIfChanged("Scanning GR BLE", "Pairing mode", "", "", true);
+  setCameraFlowState(CameraFlowState::BleScan, "Reset pairing");
+  lastFrameAt = millis();
+  lastLiveViewActivityAt = lastFrameAt;
+  lastCameraRecoveryAt = 0;
+  cameraRecoveryInProgress = false;
+  resettingPairing = false;
+}
+
 void requestManualCameraWake(const char* source) {
   if (cameraSleepGuardCooldownActive()) {
     const uint32_t now = millis();
@@ -1265,6 +1363,11 @@ void handleButtons() {
 
   if (command == rvf::UserCommand::PowerOff || pollStickPowerHold()) {
     shutdownStickS3();
+    return;
+  }
+
+  if (command == rvf::UserCommand::ResetPairing) {
+    resetBlePairingFromKey2();
     return;
   }
 
@@ -1392,6 +1495,7 @@ void setup() {
 
   beginStickPower();
   buttons.begin();
+  ricohBle.setServiceCallback(serviceButtonsDuringBleOperation);
   decoder.begin();
   grWifi.begin();
 
@@ -1425,7 +1529,9 @@ void setup() {
   }
   mjpeg.begin(previewFrameBuffer.data(), previewFrameBuffer.capacity(), onJpegFrame, nullptr);
 
+  setupCameraFlowActive = true;
   const bool startupOnline = appController.runCameraFlowOnce(makeAppFlowActions(), millis());
+  setupCameraFlowActive = false;
   lastCameraRecoveryAt = startupOnline ? millis() : 0;
   lastFrameAt = millis();
   lastLiveViewActivityAt = lastFrameAt;

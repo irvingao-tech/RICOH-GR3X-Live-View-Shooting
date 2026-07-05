@@ -10,6 +10,9 @@ UserCommand ButtonInput::commandFromEvents(const ButtonEvents& events) {
     if (events.powerOff) {
         return UserCommand::PowerOff;
     }
+    if (events.resetPairing) {
+        return UserCommand::ResetPairing;
+    }
     if (events.buttonA) {
         return UserCommand::Shoot;
     }

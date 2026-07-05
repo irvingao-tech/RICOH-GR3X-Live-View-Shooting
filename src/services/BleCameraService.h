@@ -44,6 +44,7 @@ public:
 
     int consumeDisconnectReason();
     void clearDisconnectReason();
+    Result deleteAllBonds();
     void resetStack(bool clearObjects = false);
     bool lastFailureWasResourceExhausted() const;
 
