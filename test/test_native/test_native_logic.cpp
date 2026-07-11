@@ -153,6 +153,20 @@ void testRequiresBleAddressAndAddressTypeForDirectReconnect() {
   TEST_ASSERT_FALSE(hasDirectBleReconnectIdentity(nullptr, true));
 }
 
+void testBleCandidateDiscoveryIsOpenWithoutStoredIdentity() {
+  TEST_ASSERT_TRUE(bleCandidateMatchesStoredIdentity("", "34:90:ea:cc:87:35"));
+  TEST_ASSERT_TRUE(bleCandidateMatchesStoredIdentity(nullptr, "34:90:ea:cc:87:35"));
+}
+
+void testBleCandidateMustMatchStoredIdentity() {
+  TEST_ASSERT_TRUE(bleCandidateMatchesStoredIdentity("34:90:EA:CC:87:35",
+                                                    "34:90:ea:cc:87:35"));
+  TEST_ASSERT_FALSE(bleCandidateMatchesStoredIdentity("34:90:ea:cc:87:35",
+                                                     "f0:3e:05:26:44:57"));
+  TEST_ASSERT_FALSE(bleCandidateMatchesStoredIdentity("34:90:ea:cc:87:35", ""));
+  TEST_ASSERT_FALSE(bleCandidateMatchesStoredIdentity("34:90:ea:cc:87:35", nullptr));
+}
+
 rvf::SystemHealthSnapshot healthyPreviewSnapshot() {
   rvf::SystemHealthSnapshot snapshot;
   snapshot.appState = rvf::AppState::PreviewRunning;
@@ -241,6 +255,8 @@ int main() {
   RUN_TEST(testLeavesNonNumericRicohWifiSsidUnchanged);
   RUN_TEST(testRejectsNonRicohWifiSsidForBleName);
   RUN_TEST(testRequiresBleAddressAndAddressTypeForDirectReconnect);
+  RUN_TEST(testBleCandidateDiscoveryIsOpenWithoutStoredIdentity);
+  RUN_TEST(testBleCandidateMustMatchStoredIdentity);
   RUN_TEST(testSupervisorWaitsForIntervalAndIgnoresHealthyPreview);
   RUN_TEST(testSupervisorReportsPreviewClosed);
   RUN_TEST(testSupervisorIgnoresCameraSleepGuard);

@@ -976,8 +976,15 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConne
   NimBLEDevice::setPowerLevel(ESP_PWR_LVL_P9);
 
   const uint32_t securityStartMs = millis();
-  bool securityStarted = client->secureConnection(true);
-  const int securityErr = client->getLastError();
+  const bool alreadyEncrypted = client->getConnInfo().isEncrypted();
+  bool securityStarted = alreadyEncrypted;
+  int securityErr = 0;
+  if (!alreadyEncrypted) {
+    securityStarted = client->secureConnection(true);
+    securityErr = client->getLastError();
+  } else {
+    Serial.println("BLE: link already encrypted; skipping duplicate security initiation");
+  }
   if (!securityStarted && securityErr != BLE_HS_EALREADY) {
     _lastFailureResourceExhausted = (securityErr == BLE_HS_ENOMEM);
     _lastError = String("NimBLE security start failed err=") + String(securityErr);

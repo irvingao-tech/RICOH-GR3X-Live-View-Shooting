@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <esp_heap_caps.h>
 
+#include "ble_reconnect_policy.h"
 #include "buttons.h"
 #include "camera_identity.h"
 #include "camera_profile_store.h"
@@ -699,8 +700,13 @@ bool shouldDelayStoredIdentityPowerProbe(const RicohBleDeviceInfo& info, bool fi
          cameraPowerProbeBackoffActive();
 }
 
-bool shouldBackoffAfterStoredIdentityConnectFailure(const String& errorText, bool firstBootPairing) {
+bool shouldBackoffAfterStoredIdentityConnectFailure(const RicohBleDeviceInfo& info,
+                                                    const String& errorText,
+                                                    bool firstBootPairing) {
   if (firstBootPairing || !hasStoredBleIdentity()) {
+    return false;
+  }
+  if (!bleCandidateMatchesStoredIdentity(cameraProfile.bleAddress.c_str(), info.address.c_str())) {
     return false;
   }
   return errorText.indexOf("security") >= 0 ||
@@ -800,12 +806,26 @@ bool runBleDiscoveryAtBoot() {
                     info.name.c_str(),
                     info.address.c_str());
       showStatusIfChanged("BLE not connectable", info.address, "Retrying...", "", true);
+    } else if (!bleCandidateMatchesStoredIdentity(cameraProfile.bleAddress.c_str(), info.address.c_str())) {
+      Serial.printf("BLE: ignoring non-stored camera addr=%s name='%s'; waiting for stored addr=%s\n",
+                    info.address.c_str(),
+                    info.name.c_str(),
+                    cameraProfile.bleAddress.c_str());
+      showStatusIfChanged("Waiting stored camera",
+                          cameraProfile.cameraName,
+                          cameraProfile.bleAddress,
+                          "Other GR ignored",
+                          true);
     } else if (shouldDelayStoredIdentityPowerProbe(info, firstBootPairing)) {
       Serial.printf("BLE: skipping standby power probe for %lums addr=%s name='%s'\n",
                     static_cast<unsigned long>(cameraPowerProbeBackoffRemainingMs()),
                     info.address.c_str(),
                     info.name.c_str());
       showStatusIfChanged("Camera standby", "Waiting power on", "Auto scan active", preferredBleName(), true);
+      // Waiting for the target camera's power-probe cooldown is not a failed
+      // connection. Preserve the retry budget so a rebooting camera still gets
+      // all configured connection attempts after the cooldown expires.
+      --attempt;
     } else if (shouldSkipWeakStoredIdentityCandidate(info, firstBootPairing)) {
       Serial.printf("BLE: weak stored-address candidate addr=%s rssi=%d has_name=%d services=%d%d%d%d; waiting for camera power on\n",
                     info.address.c_str(),
@@ -862,15 +882,15 @@ bool runBleDiscoveryAtBoot() {
                     static_cast<unsigned>(attempt),
                     static_cast<unsigned>(attempts),
                     bleCamera.lastError().c_str());
-      if (shouldBackoffAfterStoredIdentityConnectFailure(bleCamera.lastError(), firstBootPairing)) {
+      if (shouldBackoffAfterStoredIdentityConnectFailure(info, bleCamera.lastError(), firstBootPairing)) {
         deferStoredIdentityPowerProbeAfterConnectFailure(bleCamera.lastError());
       }
       consumeCameraPowerOffDisconnectAfterReady("BLE connect failed");
       showStatusIfChanged("BLE connect failed", bleCamera.lastError(), "Retrying...", "", true);
       bleCamera.disconnect();
       if (bleCamera.lastFailureWasResourceExhausted()) {
-        Serial.println("BLE: host resources exhausted during connect; reset stack before retry");
-        bleCamera.resetStack();
+        Serial.println("BLE: host resources exhausted during connect; rebuild stack objects before retry");
+        bleCamera.resetStack(true);
         consecutiveConnectFailures = 0;
         skipRetryDelay = true;
       } else {
