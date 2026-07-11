@@ -8,10 +8,6 @@ uint32_t elapsedSince(uint32_t nowMs, uint32_t timestampMs) {
     return (timestampMs - nowMs) < 0x80000000UL ? 0 : nowMs - timestampMs;
 }
 
-bool timestampAfterOrEqual(uint32_t candidateMs, uint32_t currentMs) {
-    return (candidateMs - currentMs) < 0x80000000UL;
-}
-
 const char* appStateName(AppState state) {
     switch (state) {
         case AppState::Booting:
@@ -504,21 +500,24 @@ void AppController::monitorLiveView(const AppFlowActions& actions, uint32_t nowM
     if (actions.lastFrameAt != nullptr) {
         const uint32_t stallCheckAt = millis();
         const uint32_t lastFrameAt = actions.lastFrameAt();
-        uint32_t lastActivityAt = lastFrameAt;
+        const uint32_t frameIdleMs = elapsedSince(stallCheckAt, lastFrameAt);
+        uint32_t activityIdleMs = frameIdleMs;
         if (actions.lastLiveViewActivityAt != nullptr) {
             const uint32_t liveViewActivityAt = actions.lastLiveViewActivityAt();
-            if (timestampAfterOrEqual(liveViewActivityAt, lastActivityAt)) {
-                lastActivityAt = liveViewActivityAt;
-            }
+            activityIdleMs = elapsedSince(stallCheckAt, liveViewActivityAt);
         }
 
-        const uint32_t idleMs = elapsedSince(stallCheckAt, lastActivityAt);
-        if (idleMs > actions.liveViewStallTimeoutMs) {
-            Serial.printf("LiveView stall: idle_ms=%lu frame_age_ms=%lu timeout_ms=%lu\n",
-                          static_cast<unsigned long>(idleMs),
-                          static_cast<unsigned long>(elapsedSince(stallCheckAt, lastFrameAt)),
+        const bool frameStalled = frameIdleMs > actions.liveViewStallTimeoutMs;
+        const bool streamStalled = activityIdleMs > actions.liveViewStallTimeoutMs;
+        if (frameStalled || streamStalled) {
+            Serial.printf("LiveView stall: frame_idle_ms=%lu stream_idle_ms=%lu timeout_ms=%lu\n",
+                          static_cast<unsigned long>(frameIdleMs),
+                          static_cast<unsigned long>(activityIdleMs),
                           static_cast<unsigned long>(actions.liveViewStallTimeoutMs));
-            recoverCameraConnection(actions, "LiveView stall watchdog");
+            recoverCameraConnection(actions,
+                                    frameStalled
+                                      ? "LiveView frame stall watchdog"
+                                      : "LiveView stream stall watchdog");
         }
     }
 }

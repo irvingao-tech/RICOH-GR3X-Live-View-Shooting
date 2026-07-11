@@ -107,9 +107,19 @@ bool beginStickPower() {
 bool isStickPowerButtonPressed() {
   if (stickPowerReady) {
     bool pressed = false;
-    if (stickPower.btnGetState(&pressed) == M5PM1_OK) {
+    const m5pm1_err_t err = stickPower.btnGetState(&pressed);
+    if (err == M5PM1_OK) {
       return pressed;
     }
+
+    // A failed M5PM1 I2C transaction can block for about a second. Retrying it
+    // on every loop starves the 2 KB LiveView reads and prevents the first JPEG
+    // frame from completing. Keep the M5Unified button/power-off fallback, but
+    // stop polling the unhealthy I2C path until the next reboot.
+    stickPowerReady = false;
+    LOGW("POWER",
+         "Power: M5PM1 button read failed err=%d; disabling M5PM1 polling and using M5Unified",
+         static_cast<int>(err));
   }
   return M5.BtnPWR.isPressed();
 }
@@ -750,6 +760,9 @@ bool runBleDiscoveryAtBoot() {
                                        : (setupCameraFlowActive ? 1 : BLE_CONNECT_ATTEMPTS);
   const uint8_t attempts = configuredAttempts == 0 ? 1 : configuredAttempts;
   uint8_t consecutiveConnectFailures = 0;
+  String retryPreferredAddress = cameraProfile.bleAddress;
+  String retryPreferredName = preferredBleName();
+  bool bondedFastSecurityAttempted = false;
 
   if (firstBootPairing) {
     Serial.printf("BLE: no stored identity; pairing scan up to %u rounds\n", static_cast<unsigned>(attempts));
@@ -768,7 +781,7 @@ bool runBleDiscoveryAtBoot() {
       return false;
     }
     bool skipRetryDelay = false;
-    const String bleName = preferredBleName();
+    const String bleName = retryPreferredName;
     setCameraFlowState(CameraFlowState::ScanningCamera, "BLE discovery");
     showStatusIfChanged(firstBootPairing ? "Pairing GR BLE" : "Scanning GR BLE",
                         cameraProfile.bleAddress,
@@ -776,7 +789,7 @@ bool runBleDiscoveryAtBoot() {
                         String("Attempt ") + attempt + "/" + attempts,
                         true);
 
-    RicohBleDeviceInfo info = bleCamera.scanCamera(cameraProfile.bleAddress, bleName, BLE_SCAN_SECONDS);
+    RicohBleDeviceInfo info = bleCamera.scanCamera(retryPreferredAddress, bleName, BLE_SCAN_SECONDS);
     if (resetBlePairingIfRequested()) {
       return false;
     }
@@ -806,13 +819,33 @@ bool runBleDiscoveryAtBoot() {
     } else {
       const String connectedName = displayBleName(info);
 
+      // The first scan may intentionally spend the full discovery window
+      // choosing a camera. Once selected, remember it for this boot attempt so
+      // retries stop as soon as that address advertises again.
+      retryPreferredAddress = info.address;
+      if (info.name.length() > 0) {
+        retryPreferredName = info.name;
+      }
+
       showStatusIfChanged("BLE camera found", connectedName, info.address, "Connecting...", true);
       setCameraFlowState(CameraFlowState::ConnectingBle, "BLE scan candidate");
       RicohBleConnectOptions options;
       options.timeoutMs = BLE_CONNECT_TIMEOUT_MS;
-      options.securityWaitMs = RICOH_BLE_SECURITY_WAIT_MS;
+      const bool bonded = bleCamera.isBonded(info);
+      const bool useBondedFastSecurity = bonded && !bondedFastSecurityAttempted;
+      if (useBondedFastSecurity) {
+        bondedFastSecurityAttempted = true;
+      }
+      options.securityWaitMs = useBondedFastSecurity
+                                 ? RICOH_BLE_BONDED_SECURITY_WAIT_MS
+                                 : RICOH_BLE_SECURITY_WAIT_MS;
       options.preConnectDelayMs = BLE_SCAN_TO_CONNECT_DELAY_MS;
       options.exchangeMtu = false;
+
+      Serial.printf("BLE: connect policy bonded=%d fast_security=%d security_wait=%lums\n",
+                    bonded ? 1 : 0,
+                    useBondedFastSecurity ? 1 : 0,
+                    static_cast<unsigned long>(options.securityWaitMs));
 
       const rvf::Result connectResult = bleCamera.connectCamera(info, options);
       if (resetBlePairingIfRequested()) {

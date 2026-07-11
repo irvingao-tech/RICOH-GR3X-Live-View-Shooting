@@ -210,7 +210,22 @@ void testSupervisorReportsPreviewIdleTimeout() {
   TEST_ASSERT_TRUE(supervisor.check(7001, snapshot, message));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(rvf::AppEventType::PreviewTimeout), static_cast<int>(message.type));
   TEST_ASSERT_EQUAL_INT(6001, message.code);
-  TEST_ASSERT_EQUAL_STRING("supervisor preview idle", message.detail);
+  TEST_ASSERT_EQUAL_STRING("supervisor preview frame idle", message.detail);
+}
+
+void testSupervisorReportsFrameStallDespiteIncomingBytes() {
+  rvf::SystemSupervisor supervisor;
+  rvf::AppMessage message;
+  rvf::SystemHealthSnapshot snapshot = healthyPreviewSnapshot();
+  snapshot.lastFrameAt = 1000;
+  snapshot.lastLiveViewActivityAt = 6500;
+  snapshot.liveViewStallTimeoutMs = 5000;
+  supervisor.begin(0);
+
+  TEST_ASSERT_TRUE(supervisor.check(7001, snapshot, message));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(rvf::AppEventType::PreviewTimeout), static_cast<int>(message.type));
+  TEST_ASSERT_EQUAL_INT(6001, message.code);
+  TEST_ASSERT_EQUAL_STRING("supervisor preview frame idle", message.detail);
 }
 
 }  // namespace
@@ -230,5 +245,6 @@ int main() {
   RUN_TEST(testSupervisorReportsPreviewClosed);
   RUN_TEST(testSupervisorIgnoresCameraSleepGuard);
   RUN_TEST(testSupervisorReportsPreviewIdleTimeout);
+  RUN_TEST(testSupervisorReportsFrameStallDespiteIncomingBytes);
   return UNITY_END();
 }

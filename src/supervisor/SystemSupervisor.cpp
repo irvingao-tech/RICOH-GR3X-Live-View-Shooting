@@ -14,10 +14,6 @@ uint32_t elapsedSince(uint32_t nowMs, uint32_t timestampMs) {
     return (timestampMs - nowMs) < 0x80000000UL ? 0 : nowMs - timestampMs;
 }
 
-bool timestampAfterOrEqual(uint32_t candidateMs, uint32_t currentMs) {
-    return (candidateMs - currentMs) < 0x80000000UL;
-}
-
 AppMessage makeMessage(AppEventType type, uint32_t nowMs, int code, const char* detail) {
     AppMessage message;
     message.type = type;
@@ -62,15 +58,21 @@ bool SystemSupervisor::check(uint32_t nowMs,
         return true;
     }
 
-    uint32_t lastActivityAt = snapshot.lastFrameAt;
-    if (timestampAfterOrEqual(snapshot.lastLiveViewActivityAt, lastActivityAt)) {
-        lastActivityAt = snapshot.lastLiveViewActivityAt;
-    }
-
-    const uint32_t idleMs = elapsedSince(nowMs, lastActivityAt);
-    if (snapshot.liveViewStallTimeoutMs > 0 && idleMs > snapshot.liveViewStallTimeoutMs) {
+    const uint32_t frameIdleMs = elapsedSince(nowMs, snapshot.lastFrameAt);
+    const uint32_t streamIdleMs = elapsedSince(nowMs, snapshot.lastLiveViewActivityAt);
+    const bool frameStalled = snapshot.liveViewStallTimeoutMs > 0 &&
+                              frameIdleMs > snapshot.liveViewStallTimeoutMs;
+    const bool streamStalled = snapshot.liveViewStallTimeoutMs > 0 &&
+                               streamIdleMs > snapshot.liveViewStallTimeoutMs;
+    if (frameStalled || streamStalled) {
+        const uint32_t idleMs = frameStalled ? frameIdleMs : streamIdleMs;
         const int code = idleMs > static_cast<uint32_t>(INT_MAX) ? INT_MAX : static_cast<int>(idleMs);
-        outMessage = makeMessage(AppEventType::PreviewTimeout, nowMs, code, "supervisor preview idle");
+        outMessage = makeMessage(AppEventType::PreviewTimeout,
+                                 nowMs,
+                                 code,
+                                 frameStalled
+                                   ? "supervisor preview frame idle"
+                                   : "supervisor preview stream idle");
         return true;
     }
 
