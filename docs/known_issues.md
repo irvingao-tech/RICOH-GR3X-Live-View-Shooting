@@ -2,7 +2,7 @@
 
 ## 已知行为/限制
 
-1. **GR IV HDF 才完成实机验证**：README 明确声明当前代码只在 RICOH GR IV HDF 上验证。
+1. **GR IV 系列验证范围**：当前已在 RICOH GR IV 与 GR IV HDF 上完成 BLE、Wi-Fi、LiveView 和快门实机验证；其他 GR 代际仍需独立验证。
 2. **GR III / GR II 当前不可用**：README 明确声明不支持当前 GR IV BLE-first 流程。
 3. **缓存 Wi-Fi 首次尝试失败可能正常**：相机 AP 刚打开时可能未准备好，固件会回读 fresh BLE Wi-Fi 参数。
 4. **BLE 安全连接可能偶发失败**：历史日志出现过 NimBLE security/MTU/remote disconnect 问题，代码包含 stack reset 和重试策略。
@@ -22,7 +22,7 @@
 - 当前实机稳定 FPS。
 - 长时间 LiveView 运行的内存碎片情况。
 - BLE reconnect 失败码与相机状态的完整映射。
-- GR IV 非 HDF 的协议兼容性。
+- GR IV / GR IV HDF 长时间运行和多固件版本兼容性。
 - 额外按钮/外设的硬件可行性。
 
 ## 后续 Codex 修改代码时必须注意

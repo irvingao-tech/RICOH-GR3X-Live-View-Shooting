@@ -23,7 +23,7 @@
 
 核心记忆：
 
-- 当前固件只在 RICOH GR IV HDF 上实机验证。
+- 当前固件已在 RICOH GR IV 与 RICOH GR IV HDF 上实机验证。
 - BLE/Wi-Fi/LiveView 以 GR IV BLE-first 流程为核心。
 - Power State `0x00EB` + Operation Mode 是防止误唤醒相机的核心策略。
 - `BLE_STARTUP` / `POWER_OFF_TRANSFER` 不得自动 Wi-Fi ON。
@@ -31,12 +31,12 @@
 ## 历史事实索引
 
 - 2026-06-27/28：代码注释记录 GR IV WLAN handles 与 Power State handles 来自 Android app / HCI logs 抓包。
-- 当前 README：GR IV HDF 已验证，GR IV 系列理论可用，GR III/GR II 不可用。
+- 当前 README：GR IV 与 GR IV HDF 已验证可用，GR III/GR II 不可用。
 - 当前代码：Button A 使用 RICOH Shooting Service 的 ShootingFlavor + OperationRequest。
 
 ## TODO_UNVERIFIED
 
-- GR IV 非 HDF 的实际兼容性。
+- GR IV / GR IV HDF 长时间运行和不同相机固件版本兼容性。
 - 预览性能基线数据。
 
 ## 后续 Codex 修改代码时必须注意

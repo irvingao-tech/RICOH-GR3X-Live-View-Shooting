@@ -150,13 +150,13 @@ Customize these constants in [src/config.h](file:///C:/Users/Administrator/Docum
 
 ## Camera Compatibility
 
-> [!WARNING]
-> The current code and protocol parameters have been verified on **RICOH GR IV HDF** only.
+> [!NOTE]
+> The current code and protocol parameters have been verified on both **RICOH GR IV** and **RICOH GR IV HDF**.
 
 | Camera Series | Status | Compatibility Notes |
 | :--- | :---: | :--- |
 | **RICOH GR IV HDF** | **Verified Working** | Core development target. Supports BLE shutter and LiveView out of the box. |
-| **RICOH GR IV Series** | **Expected to Work** | Shares the same BLE/Wi-Fi/HTTP API generation. Untested but expected to be compatible. |
+| **RICOH GR IV** | **Verified Working** | Tested with BLE pairing and reconnect, Wi-Fi activation, LiveView, and BLE AF shutter. |
 | **RICOH GR III / GR IIIx** | **Not Supported** | Uses different BLE handshakes and wake sequences. Outside the scope of this project. |
 | **RICOH GR II** | **Not Supported** | Lacks the BLE-first broadcast wake-up and on-demand Wi-Fi AP control interfaces. |
 

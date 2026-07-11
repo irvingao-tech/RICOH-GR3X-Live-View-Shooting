@@ -149,13 +149,13 @@ graph TD
 
 ## 相机兼容性状态 (Camera Compatibility)
 
-> [!WARNING]
-> 本固件和协议参数目前仅在 **RICOH GR IV HDF** 上完成了实机验证。
+> [!NOTE]
+> 本固件和协议参数已在 **RICOH GR IV** 与 **RICOH GR IV HDF** 上完成实机验证。
 
 | 相机系列 | 兼容状态 | 兼容性说明 |
 | :--- | :---: | :--- |
 | **RICOH GR IV HDF** | **已验证可用** | 固件核心开发和实机测试靶机，提供最完美的支持。 |
-| **RICOH GR IV 系列** | **理论可用** | 同代 BLE/Wi-Fi/HTTP 协议，未做代码硬编码限制，理论上完美兼容。 |
+| **RICOH GR IV** | **已验证可用** | 已完成 BLE 配对与重连、Wi-Fi 激活、LiveView 和 BLE AF 快门实机验证。 |
 | **RICOH GR III / GR IIIx** | **当前不可用** | BLE 交互时序与相机唤醒逻辑存在代际协议差异，非本固件设计支持目标。 |
 | **RICOH GR II** | **当前不可用** | 缺乏低功耗蓝牙 (BLE) 先行广播和按需激活 Wi-Fi AP 的交互链路。 |
 
