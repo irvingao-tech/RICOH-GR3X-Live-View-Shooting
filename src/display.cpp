@@ -317,6 +317,35 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
     const char* s3 = safeText(line3);
     const char* s4 = safeText(line4);
 
+    // Pairing needs a real data-entry page. The normal status renderer below
+    // intentionally collapses arbitrary status text into BLE SEARCHING /
+    // CONNECTING / CONNECTED, which previously hid the PIN editor completely.
+    if (statusContains(s1, s2, s3, s4, "PIN")) {
+        _canvas.fillRoundRect(8, 29, _width - 16, _height - 35, 8, COLOR_CARD);
+        _canvas.drawRoundRect(8, 29, _width - 16, _height - 35, 8, COLOR_AMBER);
+
+        _canvas.setTextSize(1);
+        _canvas.setTextColor(COLOR_AMBER, COLOR_CARD);
+        const int16_t titleX = static_cast<int16_t>((_width - strlen(s1) * 6) / 2);
+        _canvas.setCursor(titleX > 10 ? titleX : 10, 36);
+        _canvas.print(s1);
+
+        _canvas.setTextSize(3);
+        _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
+        const int16_t valueX = static_cast<int16_t>((_width - strlen(s2) * 18) / 2);
+        _canvas.setCursor(valueX > 8 ? valueX : 8, 55);
+        _canvas.print(s2);
+
+        _canvas.setTextSize(1);
+        _canvas.setTextColor(COLOR_GREEN, COLOR_CARD);
+        _canvas.setCursor(18, 94);
+        _canvas.print(s3);
+        _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
+        _canvas.setCursor(18, 110);
+        _canvas.print(s4);
+        return;
+    }
+
     const bool bleStopped = statusContains(s1, s2, s3, s4, "BLE UNAVAILABLE") ||
                             statusContains(s1, s2, s3, s4, "SCAN STOP") ||
                             statusContains(s1, s2, s3, s4, "STOPPED") ||
@@ -347,7 +376,7 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
     }
 
     // Fixed rectangular viewfinder frame. The border intentionally stays the
-    // same graphite color; only the GR IV status dot reflects BLE state.
+    // same graphite color; only the GR IIIx status dot reflects BLE state.
     const int16_t x = 8;
     const int16_t y = 6;
     const int16_t w = _width - 16;
@@ -380,7 +409,7 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
 
     _canvas.setTextSize(2);
     _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
-    const char* title = "GR IV";
+    const char* title = "GR IIIx";
     const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
     const int16_t titleX = static_cast<int16_t>((_width - titleW) / 2 - 4);
     _canvas.setCursor(titleX, y + 14);

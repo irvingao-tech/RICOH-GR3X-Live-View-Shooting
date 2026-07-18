@@ -12,8 +12,12 @@ ButtonEvents Buttons::poll() {
   M5.update();
 
   ButtonEvents events;
-  if (M5.BtnA.wasPressed()) {
+  if (M5.BtnA.wasClicked()) {
     events.buttonA = true;
+    events.any = true;
+  }
+  if (M5.BtnA.wasHold()) {
+    events.buttonAHold = true;
     events.any = true;
   }
   if (M5.BtnPWR.wasHold()) {

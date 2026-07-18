@@ -19,6 +19,7 @@
 #include "ricoh_ble_client.h"
 #include "services/BleCameraService.h"
 #include "services/CameraPowerPolicy.h"
+#include "services/GpsService.h"
 #include "services/PreviewFrameBuffer.h"
 #include "services/WifiPreviewService.h"
 #include "supervisor/SystemSupervisor.h"
@@ -40,6 +41,7 @@ M5PM1 stickPower;
 rvf::CameraPowerPolicy cameraPowerPolicy;
 rvf::WifiPreviewService wifiPreview(grWifi, grApi, mjpeg);
 rvf::PreviewFrameBuffer previewFrameBuffer;
+rvf::GpsService gpsService;
 rvf::SystemSupervisor systemSupervisor;
 using CameraFlowState = rvf::AppState;
 rvf::AppController appController(CameraFlowState::BleScan);
@@ -53,6 +55,8 @@ bool liveviewEnabled = true;
 uint32_t lastFrameAt = 0;
 uint32_t lastLiveViewActivityAt = 0;
 uint32_t lastStatusAt = 0;
+uint32_t lastGpsPushAt = 0;
+uint32_t lastGpsStatusAt = 0;
 uint32_t powerButtonLastPollAt = 0;
 uint32_t powerButtonPressedSince = 0;
 bool powerButtonHoldReported = false;
@@ -737,7 +741,69 @@ void saveConnectedBleIdentity(const String& connectedName, const RicohBleDeviceI
 }
 
 bool serviceButtonsDuringBleOperation() {
+  gpsService.poll();
   const ButtonEvents events = buttons.poll();
+
+  static bool pinEntryActive = false;
+  static uint8_t pinDigits[6] = {};
+  static uint8_t pinIndex = 0;
+  static uint8_t currentDigit = 0;
+
+  // Keep the PIN editor visible for the whole first-pairing flow. Some GR IIIx
+  // firmware shows its code before NimBLE delivers the passkey callback, so
+  // gating the UI only on pairingPasskeyPending() left the user staring at
+  // "BLE CONNECTING" with no way to prepare the digits.
+  const bool passkeyRequested = ricohBle.pairingPasskeyPending();
+  const bool firstPairing = !hasStoredBleIdentity();
+  if (passkeyRequested || firstPairing) {
+    if (!pinEntryActive) {
+      pinEntryActive = true;
+      memset(pinDigits, 0, sizeof(pinDigits));
+      pinIndex = 0;
+      currentDigit = 0;
+    }
+
+    if (events.buttonA) {
+      currentDigit = static_cast<uint8_t>((currentDigit + 1) % 10);
+      Serial.printf("BLE PIN UI: digit %u value %u\n",
+                    static_cast<unsigned>(pinIndex + 1),
+                    static_cast<unsigned>(currentDigit));
+    }
+
+    if (events.buttonAHold) {
+      pinDigits[pinIndex++] = currentDigit;
+      currentDigit = 0;
+      if (pinIndex >= 6) {
+        uint32_t passkey = 0;
+        for (uint8_t digit : pinDigits) {
+          passkey = passkey * 10 + digit;
+        }
+        const bool submitted = ricohBle.submitPairingPasskey(passkey);
+        Serial.printf("BLE PIN UI: submitted %06lu ok=%d\n",
+                      static_cast<unsigned long>(passkey), submitted ? 1 : 0);
+        showStatusIfChanged(submitted ? "PIN SUBMITTED" : "PIN NOT REQUESTED",
+                            String(passkey), submitted ? "Wait for camera" : "Try pairing again", "", true);
+        pinEntryActive = false;
+        return false;
+      }
+    }
+
+    String value = "PIN ";
+    for (uint8_t i = 0; i < 6; ++i) {
+      if (i < pinIndex) {
+        value += String(pinDigits[i]);
+      } else if (i == pinIndex) {
+        value += String(currentDigit);
+      } else {
+        value += "_";
+      }
+    }
+    showStatusIfChanged(passkeyRequested ? "ENTER CAMERA PIN" : "PAIRING PIN READY", value,
+                        "Blue click: +1", "Blue hold: next");
+    return false;
+  }
+
+  pinEntryActive = false;
   if (!events.resetPairing) {
     return false;
   }
@@ -745,6 +811,30 @@ bool serviceButtonsDuringBleOperation() {
   key2PairingResetRequested = true;
   Serial.println("BLE pairing reset: requested during BLE operation");
   return true;
+}
+
+void serviceGps() {
+  gpsService.poll();
+  const uint32_t now = millis();
+  if (!bleCamera.isConnected() || (now - lastGpsPushAt) < GPS_PUSH_INTERVAL_MS) {
+    return;
+  }
+  if (!gpsService.hasFreshFix(GPS_FIX_MAX_AGE_MS)) {
+    if ((now - lastGpsStatusAt) >= 30000) {
+      lastGpsStatusAt = now;
+      Serial.printf("GPS: waiting for fix satellites=%lu\n",
+                    static_cast<unsigned long>(gpsService.satellites()));
+    }
+    return;
+  }
+
+  if (ricohBle.updateGps(gpsService.fix())) {
+    lastGpsPushAt = now;
+    lastGpsStatusAt = now;
+  } else if ((now - lastGpsStatusAt) >= 10000) {
+    lastGpsStatusAt = now;
+    Serial.printf("GPS: camera update failed: %s\n", ricohBle.lastError().c_str());
+  }
 }
 
 bool resetBlePairingIfRequested() {
@@ -1549,6 +1639,7 @@ void updateStatusUiIfDue() {
 }
 
 void runAppTick() {
+  serviceGps();
   const uint32_t now = millis();
   const rvf::AppTickPlan tickPlan = appController.planTick(now);
 
@@ -1592,6 +1683,7 @@ void setup() {
 
   beginStickPower();
   buttons.begin();
+  gpsService.begin();
   ricohBle.setServiceCallback(serviceButtonsDuringBleOperation);
   decoder.begin();
   grWifi.begin();

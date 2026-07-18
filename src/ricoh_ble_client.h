@@ -33,6 +33,18 @@ struct RicohBleConnectOptions {
   bool exchangeMtu = true;
 };
 
+struct RicohGpsFix {
+  double latitude = 0.0;
+  double longitude = 0.0;
+  double altitudeMeters = 0.0;
+  uint16_t year = 0;
+  uint8_t month = 0;
+  uint8_t day = 0;
+  uint8_t hour = 0;
+  uint8_t minute = 0;
+  uint8_t second = 0;
+};
+
 enum class RicohCameraPowerState {
   Unknown,
   On,
@@ -67,11 +79,14 @@ public:
   bool enablePowerStateNotify();
   bool consumePowerOffNotification();
   bool waitForWifiCredentials(RicohBleWifiCredentials& credentials, uint32_t timeoutMs);
+  bool updateGps(const RicohGpsFix& fix);
   void disconnect();
   int consumeDisconnectReason();
   void clearDisconnectReason();
   bool deleteAllBonds();
-  void resetStack(bool clearObjects = false);
+  bool pairingPasskeyPending() const;
+  bool submitPairingPasskey(uint32_t passkey);
+  void resetStack(bool clearObjects = true);
   bool lastFailureWasResourceExhausted() const;
 
   String statusText() const;

@@ -1,4 +1,9 @@
 .pio/
+.pio-core/
+.tools/
+pio.cmd
+__pycache__/
+*.py[cod]
 .ccg/
 platformio.local.ini
 .vscode/.browse.c_cpp.db*

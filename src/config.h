@@ -46,8 +46,12 @@ constexpr uint8_t BLE_STACK_RESET_AFTER_FAILURES = 2;
 constexpr uint32_t BLE_STACK_RESET_DELAY_MS = 1500;
 constexpr uint32_t BLE_RECOVERY_STACK_RESET_GRACE_MS = 700;
 constexpr uint32_t BLE_DISCONNECT_WAIT_MS = 1200;
-constexpr uint32_t RICOH_BLE_BONDED_SECURITY_WAIT_MS = 1500;
-constexpr uint32_t RICOH_BLE_SECURITY_WAIT_MS = 7000;
+// Restoring an authenticated GR IIIx bond can finish after encryption is set.
+// Leave enough time for the authentication-complete event before GATT access.
+constexpr uint32_t RICOH_BLE_BONDED_SECURITY_WAIT_MS = 5000;
+// First GR IIIx pairing waits for the user to relay the camera's six-digit
+// passkey over USB serial. Bonded reconnects use the shorter timeout above.
+constexpr uint32_t RICOH_BLE_SECURITY_WAIT_MS = 90000;
 constexpr uint8_t FIRST_BOOT_BLE_PAIRING_ATTEMPTS = 12;
 constexpr uint32_t SERIAL_BOOT_WAIT_MS = 500;
 constexpr uint32_t CAMERA_POWER_OFF_COOLDOWN_MS = 15000;
@@ -68,21 +72,18 @@ constexpr uint32_t RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS = 10000;
 constexpr uint32_t RICOH_BLE_WIFI_CREDENTIAL_POLL_MS = 500;
 constexpr uint8_t WIFI_OPEN_ATTEMPTS = 3;
 
-// Verified from the RICOH GR Android app BLE traffic captured on 2026-06-27.
-constexpr uint16_t RICOH_BLE_GR4_WLAN_POWER_HANDLE = 0x0135;
-constexpr uint8_t RICOH_BLE_GR4_WLAN_ON_VALUE = 0x01;
-constexpr uint16_t RICOH_BLE_GR4_WLAN_SSID_HANDLE = 0x0138;
-constexpr uint16_t RICOH_BLE_GR4_WLAN_PASSPHRASE_HANDLE = 0x013A;
-constexpr uint16_t RICOH_BLE_GR4_WLAN_SECURITY_HANDLE = 0x013C;
-constexpr uint16_t RICOH_BLE_GR4_WLAN_FREQUENCY_HANDLE = 0x013E;
-constexpr uint16_t RICOH_BLE_GR4_WLAN_BSSID_HANDLE = 0x0140;
+// GR III / GR IIIx use UUID-addressed characteristics. Do not reuse the GR IV
+// fixed ATT handles: handles are assigned by the camera's GATT database and are
+// not stable across generations.
+constexpr uint8_t RICOH_BLE_GR3_WLAN_OFF_VALUE = 0x00;
+constexpr uint8_t RICOH_BLE_GR3_WLAN_AP_VALUE = 0x01;
+constexpr uint8_t RICOH_BLE_GR3_POWER_STATE_OFF_VALUE = 0x00;
+constexpr uint8_t RICOH_BLE_GR3_POWER_STATE_ON_VALUE = 0x01;
+constexpr uint8_t RICOH_BLE_GR3_POWER_STATE_SLEEP_VALUE = 0x02;
 
-// Verified from Android HCI logs captured on 2026-06-28.
-// 0x01: camera powered on / controllable, 0x00: power-off or shutting down.
-constexpr uint16_t RICOH_BLE_GR4_POWER_STATE_HANDLE = 0x00EB;
-constexpr uint16_t RICOH_BLE_GR4_POWER_STATE_CCCD_HANDLE = 0x00EC;
-constexpr uint8_t RICOH_BLE_GR4_POWER_STATE_ON_VALUE = 0x01;
-constexpr uint8_t RICOH_BLE_GR4_POWER_STATE_OFF_VALUE = 0x00;
+constexpr uint32_t GPS_UART_BAUD = 115200;
+constexpr uint32_t GPS_PUSH_INTERVAL_MS = 10000;
+constexpr uint32_t GPS_FIX_MAX_AGE_MS = 15000;
 
 
 #ifndef RICOH_BLE_INFO_SERVICE_UUID
@@ -93,6 +94,12 @@ constexpr uint8_t RICOH_BLE_GR4_POWER_STATE_OFF_VALUE = 0x00;
 #endif
 #ifndef RICOH_BLE_OPERATION_MODE_UUID
 #define RICOH_BLE_OPERATION_MODE_UUID "1452335A-EC7F-4877-B8AB-0F72E18BB295"
+#endif
+#ifndef RICOH_BLE_POWER_STATE_UUID
+#define RICOH_BLE_POWER_STATE_UUID "B58CE84C-0666-4DE9-BEC8-2D27B27B3211"
+#endif
+#ifndef RICOH_BLE_GEO_TAG_UUID
+#define RICOH_BLE_GEO_TAG_UUID "A36AFDCF-6B67-4046-9BE7-28FB67DBC071"
 #endif
 #ifndef RICOH_BLE_SHOOTING_SERVICE_UUID
 #define RICOH_BLE_SHOOTING_SERVICE_UUID "9F00F387-8345-4BBC-8B92-B87B52E3091A"
@@ -105,4 +112,27 @@ constexpr uint8_t RICOH_BLE_GR4_POWER_STATE_OFF_VALUE = 0x00;
 #endif
 #ifndef RICOH_BLE_CONTROL_SERVICE_UUID
 #define RICOH_BLE_CONTROL_SERVICE_UUID "0F291746-0C80-4726-87A7-3C501FD3B4B6"
+#endif
+
+#ifndef RICOH_BLE_GR3_WLAN_SERVICE_UUID
+#define RICOH_BLE_GR3_WLAN_SERVICE_UUID "F37F568F-9071-445D-A938-5441F2E82399"
+#endif
+#ifndef RICOH_BLE_GR3_WLAN_NETWORK_TYPE_UUID
+#define RICOH_BLE_GR3_WLAN_NETWORK_TYPE_UUID "9111CDD0-9F01-45C4-A2D4-E09E8FB0424D"
+#endif
+#ifndef RICOH_BLE_GR3_WLAN_SSID_UUID
+#define RICOH_BLE_GR3_WLAN_SSID_UUID "90638E5A-E77D-409D-B550-78F7E1CA5AB4"
+#endif
+#ifndef RICOH_BLE_GR3_WLAN_PASSPHRASE_UUID
+#define RICOH_BLE_GR3_WLAN_PASSPHRASE_UUID "0F38279C-FE9E-461B-8596-81287E8C9A81"
+#endif
+#ifndef RICOH_BLE_GR3_WLAN_CHANNEL_UUID
+#define RICOH_BLE_GR3_WLAN_CHANNEL_UUID "51DE6EBC-0F22-4357-87E4-B1FA1D385AB8"
+#endif
+
+#ifndef RICOH_BLE_GPS_SERVICE_UUID
+#define RICOH_BLE_GPS_SERVICE_UUID "84A0DD62-E8AA-4D0F-91DB-819B6724C69E"
+#endif
+#ifndef RICOH_BLE_GPS_INFORMATION_UUID
+#define RICOH_BLE_GPS_INFORMATION_UUID "28F59D60-8B8E-4FCD-A81F-61BDB46595A9"
 #endif
