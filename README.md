@@ -4,8 +4,6 @@
 
 > 当前实机状态：**GR IIIx 首次配对、自动重连、Wi-Fi 实时取景和 BLE 快门均已验证可用。** GPS/BDS Unit v1.1 的读取与写入代码已经加入，但 StickS3 Port.C 引脚识别仍待实机修正，因此 GPS 功能目前属于实验功能。
 
-![StickS3 Live View](docs/images/FinalOutput.png)
-
 ## 功能
 
 - RICOH GR IIIx BLE 扫描、六位验证码安全配对与绑定保存

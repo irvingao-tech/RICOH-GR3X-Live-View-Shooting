@@ -7,10 +7,6 @@
   </a>
 </p>
 
-<p align="center">
-  <img src="docs/images/FinalOutput_EN.png" alt="RICOH GR Live View Shooting" width="100%" />
-</p>
-
 <h1 align="center">RICOH GR Live View Shooting</h1>
 
 <p align="center">
