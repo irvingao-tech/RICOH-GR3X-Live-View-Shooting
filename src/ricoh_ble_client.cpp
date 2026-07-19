@@ -1015,6 +1015,7 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs)
 bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConnectOptions& options) {
   begin();
   _lastFailureResourceExhausted = false;
+  _shootingFlavorReady = false;
   const uint32_t connectStartMs = millis();
   disconnect();
   if (!info.found || info.address.length() == 0) {
@@ -1122,6 +1123,10 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConne
                 static_cast<unsigned long>(securityStartMs - connectStartMs),
                 static_cast<unsigned long>(millis() - securityStartMs),
                 static_cast<unsigned long>(millis() - connectStartMs));
+  if (!prepareShutter()) {
+    Serial.printf("BLE: shutter prewarm deferred: %s\n", _lastError.c_str());
+    _lastError = "";
+  }
   return true;
 }
 
@@ -1142,6 +1147,37 @@ bool RicohBleClient::isConnected() const {
 
 bool RicohBleClient::shutterReady() const {
   return isConnected();
+}
+
+bool RicohBleClient::prepareShutter() {
+  if (_shootingFlavorReady) {
+    return true;
+  }
+  NimBLEClient* client = static_cast<NimBLEClient*>(_client);
+  if (!isConnected() || client == nullptr) {
+    _lastError = "BLE not connected";
+    return false;
+  }
+
+  const uint32_t startedAt = millis();
+  NimBLERemoteService* shootingService =
+      client->getService(NimBLEUUID(RICOH_BLE_SHOOTING_SERVICE_UUID));
+  String err;
+  NimBLERemoteCharacteristic* shootingFlavor =
+      writableCharacteristic(shootingService, RICOH_BLE_SHOOTING_FLAVOR_UUID, "ShootingFlavor", err);
+  const uint8_t flavorPayload[] = {RICOH_SHOOTING_FLAVOR_IMMEDIATE};
+  if (shootingFlavor == nullptr ||
+      !writeCharacteristicValue(shootingFlavor, flavorPayload, sizeof(flavorPayload), "ShootingFlavor", err)) {
+    _lastError = err;
+    _shootingFlavorReady = false;
+    return false;
+  }
+
+  _shootingFlavorReady = true;
+  _lastError = "";
+  Serial.printf("BLE: shutter prewarmed in %lums\n",
+                static_cast<unsigned long>(millis() - startedAt));
+  return true;
 }
 
 bool RicohBleClient::openWifi() {
@@ -1378,13 +1414,6 @@ bool RicohBleClient::shoot(bool autofocus) {
   // OperationRequest={START, AF|NO_AF}.  There is no release write.
   NimBLERemoteService* shootingService = client->getService(NimBLEUUID(RICOH_BLE_SHOOTING_SERVICE_UUID));
   String err;
-  NimBLERemoteCharacteristic* shootingFlavor =
-      writableCharacteristic(shootingService, RICOH_BLE_SHOOTING_FLAVOR_UUID, "ShootingFlavor", err);
-  if (shootingFlavor == nullptr) {
-    _lastError = err;
-    return false;
-  }
-
   NimBLERemoteCharacteristic* operationRequest =
       writableCharacteristic(shootingService, RICOH_BLE_OPERATION_REQUEST_UUID, "OperationRequest", err);
   if (operationRequest == nullptr) {
@@ -1392,12 +1421,11 @@ bool RicohBleClient::shoot(bool autofocus) {
     return false;
   }
 
-  const uint8_t flavorPayload[] = {RICOH_SHOOTING_FLAVOR_IMMEDIATE};
-  if (!writeCharacteristicValue(shootingFlavor, flavorPayload, sizeof(flavorPayload), "ShootingFlavor", err)) {
-    _lastError = err;
+  if (!prepareShutter()) {
     return false;
   }
 
+  const uint32_t operationStartedAt = millis();
   const uint8_t operationParam = autofocus ? RICOH_OPERATION_PARAM_AF : RICOH_OPERATION_PARAM_NO_AF;
   const uint8_t operationPayload[] = {RICOH_OPERATION_START, operationParam};
   if (!writeCharacteristicValue(operationRequest, operationPayload, sizeof(operationPayload), "OperationRequest", err)) {
@@ -1406,9 +1434,34 @@ bool RicohBleClient::shoot(bool autofocus) {
   }
 
   _lastError = "";
-  Serial.printf("BLE: Ricoh shutter OperationRequest START param=%u autofocus=%d\n",
+  Serial.printf("BLE: Ricoh shutter OperationRequest START param=%u autofocus=%d write_ms=%lu\n",
                 static_cast<unsigned>(operationParam),
-                autofocus ? 1 : 0);
+                autofocus ? 1 : 0,
+                static_cast<unsigned long>(millis() - operationStartedAt));
+  return true;
+}
+
+bool RicohBleClient::closeWifi() {
+  NimBLEClient* client = static_cast<NimBLEClient*>(_client);
+  if (!isConnected() || client == nullptr) {
+    _lastError = "BLE not connected";
+    return false;
+  }
+
+  NimBLERemoteService* wlanService =
+      client->getService(NimBLEUUID(RICOH_BLE_GR3_WLAN_SERVICE_UUID));
+  String err;
+  NimBLERemoteCharacteristic* networkType = writableCharacteristic(
+      wlanService, RICOH_BLE_GR3_WLAN_NETWORK_TYPE_UUID, "GR IIIx NetworkType", err);
+  const uint8_t payload[] = {RICOH_BLE_GR3_WLAN_OFF_VALUE};
+  if (networkType == nullptr ||
+      !writeCharacteristicValue(networkType, payload, sizeof(payload), "GR IIIx NetworkType", err)) {
+    _lastError = err;
+    return false;
+  }
+
+  _lastError = "";
+  Serial.println("BLE: GR IIIx Wi-Fi off requested");
   return true;
 }
 
@@ -1479,6 +1532,7 @@ bool RicohBleClient::updateGps(const RicohGpsFix& fix) {
 }
 
 void RicohBleClient::disconnect() {
+  _shootingFlavorReady = false;
   NimBLEClient* client = static_cast<NimBLEClient*>(_client);
   if (client != nullptr) {
     if (client->isConnected()) {

@@ -78,9 +78,17 @@ bool DisplayUi::begin() {
         _height = M5.Display.height();
     }
 
-    // Initialize Canvas sprite for double-buffered flicker-free rendering
+    // Keep the 240x135 RGB565 frame in fast internal RAM. Decoding into PSRAM
+    // made the old flicker-free path much slower; a single LCD burst after the
+    // frame is complete avoids the visible block-by-block refresh of direct mode.
     _canvas.setColorDepth(16); // 16-bit RGB565
-    _canvas.createSprite(_width, _height);
+    _canvas.setPsram(false);
+    if (_canvas.createSprite(_width, _height) == nullptr) {
+        _canvas.setPsram(true);
+        if (_canvas.createSprite(_width, _height) == nullptr) {
+            return false;
+        }
+    }
 
     clear(COLOR_BG);
     _canvas.setTextSize(1);
@@ -217,45 +225,46 @@ void DisplayUi::drawOverlay(const String& wifiStatus,
                             const String& liveviewStatus,
                             const String& model,
                             const String& battery,
+                            const String& aperture,
+                            const String& shutterSpeed,
+                            const String& iso,
+                            const String& exposureCompensation,
+                            const String& focusStatus,
                             float fps,
                             int32_t rssi,
                             uint32_t frames,
                             uint32_t droppedFrames) {
-    // 1. Draw corner crop marks of the viewport (Assuming standard 4:3 centered image width 180, X=30..210)
-    const int16_t vx = 30;
-    const int16_t vy = 0;
-    const int16_t vw = 180;
-    const int16_t vh = 135;
-    const int16_t len = 8;
-
-    // Top-Left corner
-    _canvas.drawFastHLine(vx, vy, len, COLOR_WHITE);
-    _canvas.drawFastVLine(vx, vy, len, COLOR_WHITE);
-    // Top-Right corner
-    _canvas.drawFastHLine(vx + vw - len, vy, len, COLOR_WHITE);
-    _canvas.drawFastVLine(vx + vw - 1, vy, len, COLOR_WHITE);
-    // Bottom-Left corner
-    _canvas.drawFastHLine(vx, vy + vh - 1, len, COLOR_WHITE);
-    _canvas.drawFastVLine(vx, vy + vh - len, len, COLOR_WHITE);
-    // Bottom-Right corner
-    _canvas.drawFastHLine(vx + vw - len, vy + vh - 1, len, COLOR_WHITE);
-    _canvas.drawFastVLine(vx + vw - 1, vy + vh - len, len, COLOR_WHITE);
-
-    // 2. Draw autofocus bracket in the center (green, X=108..132, Y=59..75)
+    // Lightweight AF/shutter feedback. "SHOT" means the camera accepted the
+    // AF+shoot command; it is intentionally not labelled as focus confirmation.
     const int16_t cx = _width / 2;
     const int16_t cy = _height / 2;
     const int16_t bw = 12;
     const int16_t bh = 8;
+    uint16_t focusColor = COLOR_GRAY;
+    if (focusStatus == "AF") {
+        focusColor = COLOR_YELLOW;
+    } else if (focusStatus == "SHOT") {
+        focusColor = COLOR_GREEN;
+    } else if (focusStatus == "ERR") {
+        focusColor = COLOR_RED;
+    }
 
-    _canvas.drawFastVLine(cx - bw, cy - bh, bh * 2, COLOR_GREEN);
-    _canvas.drawFastHLine(cx - bw, cy - bh, 4, COLOR_GREEN);
-    _canvas.drawFastHLine(cx - bw, cy + bh - 1, 4, COLOR_GREEN);
+    _canvas.drawFastVLine(cx - bw, cy - bh, bh * 2, focusColor);
+    _canvas.drawFastHLine(cx - bw, cy - bh, 4, focusColor);
+    _canvas.drawFastHLine(cx - bw, cy + bh - 1, 4, focusColor);
 
-    _canvas.drawFastVLine(cx + bw - 1, cy - bh, bh * 2, COLOR_GREEN);
-    _canvas.drawFastHLine(cx + bw - 4, cy - bh, 4, COLOR_GREEN);
-    _canvas.drawFastHLine(cx + bw - 4, cy + bh - 1, 4, COLOR_GREEN);
+    _canvas.drawFastVLine(cx + bw - 1, cy - bh, bh * 2, focusColor);
+    _canvas.drawFastHLine(cx + bw - 4, cy - bh, 4, focusColor);
+    _canvas.drawFastHLine(cx + bw - 4, cy + bh - 1, 4, focusColor);
 
-    // 3. Draw transparent HUD overlays
+    if (!focusStatus.isEmpty()) {
+        _canvas.setTextColor(focusColor);
+        _canvas.setTextSize(1);
+        _canvas.setCursor(cx - (focusStatus.length() * 3), cy + 13);
+        _canvas.print(focusStatus);
+    }
+
+    // Small top status line.
     _canvas.setTextSize(1);
 
     // Top-Left: LIVE state with a small status dot
@@ -276,27 +285,29 @@ void DisplayUi::drawOverlay(const String& wifiStatus,
     _canvas.setCursor(14, 18);
     _canvas.print(fpsText);
 
-    // Bottom-Left: Camera Model & Battery level icon
+    // Bottom exposure strip. Keep it opaque and compact so it is inexpensive
+    // to redraw in the off-screen canvas.
+    _canvas.fillRect(0, _height - 17, _width, 17, COLOR_DARK);
     _canvas.setTextColor(COLOR_WHITE);
-    _canvas.setCursor(14, _height - 24);
-    if (model.length() > 0) {
-        _canvas.print(model.substring(0, 8));
-    } else {
-        _canvas.print("RICOH GR");
+    _canvas.setCursor(5, _height - 13);
+    _canvas.print(shutterSpeed.isEmpty() ? "--" : shutterSpeed);
+    _canvas.setCursor(58, _height - 13);
+    _canvas.print(aperture.isEmpty() ? "F--" : aperture);
+    _canvas.setCursor(104, _height - 13);
+    _canvas.print(iso.isEmpty() ? "ISO--" : iso);
+    if (!exposureCompensation.isEmpty()) {
+        _canvas.setCursor(166, _height - 13);
+        _canvas.print(exposureCompensation);
+        _canvas.print("EV");
     }
-    drawBatteryIcon(14, _height - 12, battery.c_str());
 
-    // Bottom-Right: RSSI (WiFi signal bars)
     drawWifiIcon(_width - 24, _height - 12, rssi);
 
-    // Top-Right: Frame statistics
-    char statsText[24];
-    snprintf(statsText, sizeof(statsText), "%lu/%lu",
-             static_cast<unsigned long>(frames),
-             static_cast<unsigned long>(droppedFrames));
-    _canvas.setTextColor(droppedFrames == 0 ? COLOR_WHITE : COLOR_YELLOW);
-    _canvas.setCursor(_width - (strlen(statsText) * 6) - 14, 6);
-    _canvas.print(statsText);
+    (void)model;
+    (void)battery;
+    (void)wifiStatus;
+    (void)frames;
+    (void)droppedFrames;
 }
 
 int16_t DisplayUi::width() const {

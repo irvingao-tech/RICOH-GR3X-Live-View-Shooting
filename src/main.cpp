@@ -75,6 +75,9 @@ uint32_t decodedFrames = 0;
 uint32_t fpsWindowStart = 0;
 uint32_t fpsWindowFrames = 0;
 float currentFps = 0.0f;
+String focusHudStatus;
+uint32_t focusHudUntil = 0;
+uint32_t shutterCommandStartedAt = 0;
 uint32_t lastStatusDrawAt = 0;
 String lastStatusLine1;
 String lastStatusLine2;
@@ -84,7 +87,7 @@ bool wifiCacheRefreshPending = false;
 uint32_t wifiCacheRefreshAfter = 0;
 
 constexpr uint32_t STATUS_MIN_REDRAW_MS = 1500;
-constexpr bool DRAW_LIVE_OVERLAY = true;
+constexpr bool DRAW_LIVE_OVERLAY = LIVEVIEW_DRAW_OVERLAY;
 
 void requestManualCameraWake(const char* source);
 void resetBlePairingFromKey2();
@@ -744,6 +747,12 @@ bool serviceButtonsDuringBleOperation() {
   gpsService.poll();
   const ButtonEvents events = buttons.poll();
 
+  if (events.resetPairing) {
+    key2PairingResetRequested = true;
+    Serial.println("BLE pairing reset: requested during BLE operation");
+    return true;
+  }
+
   static bool pinEntryActive = false;
   static uint8_t pinDigits[6] = {};
   static uint8_t pinIndex = 0;
@@ -770,7 +779,7 @@ bool serviceButtonsDuringBleOperation() {
                     static_cast<unsigned>(currentDigit));
     }
 
-    if (events.buttonAHold) {
+    if (events.buttonB || events.buttonAHold) {
       pinDigits[pinIndex++] = currentDigit;
       currentDigit = 0;
       if (pinIndex >= 6) {
@@ -799,18 +808,12 @@ bool serviceButtonsDuringBleOperation() {
       }
     }
     showStatusIfChanged(passkeyRequested ? "ENTER CAMERA PIN" : "PAIRING PIN READY", value,
-                        "Blue click: +1", "Blue hold: next");
+                        "Button A: +1", "Button B: next");
     return false;
   }
 
   pinEntryActive = false;
-  if (!events.resetPairing) {
-    return false;
-  }
-
-  key2PairingResetRequested = true;
-  Serial.println("BLE pairing reset: requested during BLE operation");
-  return true;
+  return false;
 }
 
 void serviceGps() {
@@ -1174,18 +1177,33 @@ void showShutterBleNotReadyForController() {
 }
 
 bool shootAutofocusForController() {
-  showStatusIfChanged("Button A shutter", "BLE shooting...", cameraProps.model, cameraProps.battery, true);
+  shutterCommandStartedAt = millis();
+  focusHudStatus = "AF";
+  focusHudUntil = millis() + 1500;
+  if (!appController.isPreviewActive()) {
+    showStatusIfChanged("Button A shutter", "BLE shooting...", cameraProps.model, cameraProps.battery, true);
+  }
   const rvf::Result shootResult = bleCamera.shoot(true);
   return shootResult.ok();
 }
 
 void onShutterOkForController() {
-  showStatusIfChanged("Button A shutter", "BLE SHOT OK", cameraProps.model, cameraProps.battery, true);
+  focusHudStatus = "SHOT";
+  focusHudUntil = millis() + 1200;
+  Serial.printf("Button A: shutter command accepted in %lums\n",
+                static_cast<unsigned long>(millis() - shutterCommandStartedAt));
+  if (!appController.isPreviewActive()) {
+    showStatusIfChanged("Button A shutter", "BLE SHOT OK", cameraProps.model, cameraProps.battery, true);
+  }
 }
 
 void onShutterFailedForController() {
+  focusHudStatus = "ERR";
+  focusHudUntil = millis() + 1500;
   Serial.printf("Button A: BLE shutter failed: %s\n", bleCamera.lastError().c_str());
-  showStatusIfChanged("Button A BLE failed", bleCamera.lastError(), "Preview kept", "", true);
+  if (!appController.isPreviewActive()) {
+    showStatusIfChanged("Button A BLE failed", bleCamera.lastError(), "Preview kept", "", true);
+  }
 }
 
 bool previewKeptAfterShutterFailureForController() {
@@ -1389,9 +1407,21 @@ void refreshPropsIfDue(bool force = false) {
   }
 
   CameraProps nextProps;
-  if (wifiPreview.fetchProps(nextProps, PROPS_TIMEOUT_MS).ok()) {
+  if (wifiPreview.fetchProps(nextProps, force ? PROPS_TIMEOUT_MS : PROPS_REFRESH_TIMEOUT_MS).ok()) {
+    const bool exposureChanged = nextProps.aperture != cameraProps.aperture ||
+                                 nextProps.shutterSpeed != cameraProps.shutterSpeed ||
+                                 nextProps.iso != cameraProps.iso ||
+                                 nextProps.exposureCompensation != cameraProps.exposureCompensation;
     cameraProps = nextProps;
     lastPropsAt = now;
+    if (exposureChanged) {
+      Serial.printf("HTTP: exposure tv='%s' av='%s' sv='%s' xv='%s' state='%s'\n",
+                    cameraProps.shutterSpeed.c_str(),
+                    cameraProps.aperture.c_str(),
+                    cameraProps.iso.c_str(),
+                    cameraProps.exposureCompensation.c_str(),
+                    cameraProps.liveState.c_str());
+    }
   } else if (force) {
     Serial.printf("HTTP: props refresh failed: %s\n", wifiPreview.lastError().c_str());
   }
@@ -1418,21 +1448,35 @@ void onJpegFrame(const uint8_t* data, size_t len, void*) {
   previewFrameBuffer.recordFrame(len);
 
   const uint32_t renderStartMs = millis();
-  if (!decoder.drawFrame(ui.getCanvas(), data, len)) {
+  LovyanGFX* renderTarget = LIVEVIEW_FAST_DIRECT_LCD
+                              ? static_cast<LovyanGFX*>(&M5.Display)
+                              : ui.getCanvas();
+  if (!decoder.drawFrame(renderTarget, data, len)) {
     Serial.printf("JPEG decode failed len=%u err=%s\n", static_cast<unsigned>(len), decoder.lastError().c_str());
     wifiPreview.recordRenderedFrame(decoder.lastDecodeMs(), millis() - renderStartMs);
   } else {
+    if (focusHudUntil != 0 && static_cast<int32_t>(millis() - focusHudUntil) >= 0) {
+      focusHudStatus = "";
+      focusHudUntil = 0;
+    }
     if (DRAW_LIVE_OVERLAY) {
       ui.drawOverlay(grWifi.statusText(),
                      wifiPreview.isPreviewRunning() ? "LIVE" : "IDLE",
                      cameraProps.model,
                      cameraProps.battery,
+                     cameraProps.aperture,
+                     cameraProps.shutterSpeed,
+                     cameraProps.iso,
+                     cameraProps.exposureCompensation,
+                     focusHudStatus,
                      currentFps,
                      grWifi.rssi(),
                      decodedFrames,
                      mjpeg.droppedFrames());
     }
-    ui.pushCanvas();
+    if (!LIVEVIEW_FAST_DIRECT_LCD) {
+      ui.pushCanvas();
+    }
     wifiPreview.recordRenderedFrame(decoder.lastDecodeMs(), millis() - renderStartMs);
   }
   lastFrameAt = millis();
@@ -1544,6 +1588,49 @@ void shutdownStickS3() {
   }
 }
 
+void enterLocalCameraMode() {
+  liveviewEnabled = false;
+  closeLiveView("Button B local camera mode");
+  wifiPreview.disconnectWifi();
+
+  if (bleCamera.isConnected()) {
+    const rvf::Result wifiOff = bleCamera.closeWifi();
+    if (wifiOff.failed()) {
+      Serial.printf("Button B: camera Wi-Fi off failed: %s\n", bleCamera.lastError().c_str());
+    }
+    setCameraFlowState(CameraFlowState::BleReady, "Local camera mode");
+  } else {
+    setCameraFlowState(CameraFlowState::BleScan, "Local camera mode without BLE");
+  }
+
+  showStatusIfChanged("LOCAL CAMERA MODE", "Camera LCD enabled", "A: BLE shutter", "B: LiveView", true);
+  Serial.println("Mode: local camera controls enabled; LiveView/Wi-Fi stopped");
+}
+
+void enterStickLiveViewMode() {
+  liveviewEnabled = true;
+  showStatusIfChanged("LIVEVIEW MODE", "Starting camera Wi-Fi", "Please wait...", "", true);
+  Serial.println("Mode: StickS3 LiveView requested");
+
+  bool online = false;
+  if (bleCamera.isConnected()) {
+    online = appController.resumeFromBleReady(makeAppFlowActions(), "Button B LiveView");
+  } else {
+    online = appController.runCameraFlowOnce(makeAppFlowActions(), millis());
+  }
+  if (!online) {
+    showStatusIfChanged("LIVEVIEW FAILED", bleCamera.lastError(), "B: retry", "", true);
+  }
+}
+
+void toggleCameraDisplayMode() {
+  if (liveviewEnabled) {
+    enterLocalCameraMode();
+  } else {
+    enterStickLiveViewMode();
+  }
+}
+
 void handleButtons() {
   const ButtonEvents events = buttons.poll();
   const rvf::UserCommand command = rvf::ButtonInput::commandFromEvents(events);
@@ -1555,6 +1642,11 @@ void handleButtons() {
 
   if (command == rvf::UserCommand::ResetPairing) {
     resetBlePairingFromKey2();
+    return;
+  }
+
+  if (command == rvf::UserCommand::StopPreview) {
+    toggleCameraDisplayMode();
     return;
   }
 
@@ -1682,6 +1774,8 @@ void setup() {
   waitForSerialConsole();
 
   beginStickPower();
+  M5.Power.setExtOutput(true);
+  LOGLINE_I("POWER", "Power: EXT_5V output enabled for Grove accessories");
   buttons.begin();
   gpsService.begin();
   ricohBle.setServiceCallback(serviceButtonsDuringBleOperation);

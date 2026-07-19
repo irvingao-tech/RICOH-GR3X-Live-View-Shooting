@@ -419,6 +419,12 @@ void AppController::serviceCameraFlowIfNeeded(const AppFlowActions& actions, uin
     }
 
     const bool bleConnected = actions.isBleConnected != nullptr && actions.isBleConnected();
+    // In local-camera mode the BLE link deliberately stays connected for the
+    // shutter, while Wi-Fi and LiveView stay off so the camera LCD remains
+    // usable.  Do not let the scheduled recovery loop reopen Wi-Fi.
+    if (!actions.liveviewEnabled && bleConnected) {
+        return;
+    }
     if (!bleConnected &&
         actions.consumePowerOffDisconnect != nullptr &&
         actions.consumePowerOffDisconnect("scheduled service")) {

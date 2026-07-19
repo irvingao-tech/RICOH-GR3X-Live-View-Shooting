@@ -2,7 +2,7 @@
 
 在 **M5Stack StickS3** 上运行的 RICOH GR IIIx 蓝牙遥控器与实时取景器。StickS3 通过 BLE 与相机安全配对并读取 Wi-Fi 参数，再连接相机热点，在屏幕上显示 Live View；实时取景时短按蓝色按键即可自动对焦并拍照。
 
-> 当前实机状态：**GR IIIx 首次配对、自动重连、Wi-Fi 实时取景和 BLE 快门均已验证可用。** GPS/BDS Unit v1.1 的读取与写入代码已经加入，但 StickS3 Port.C 引脚识别仍待实机修正，因此 GPS 功能目前属于实验功能。
+> 当前实机状态：**GR IIIx 首次配对、自动重连、Wi-Fi 实时取景和 BLE 快门均已验证可用。** GPS/BDS Unit v1.1 的读取与写入代码已经加入，StickS3 Grove 供电与 UART 引脚已按 G9/G10 适配，但 GPS 写入照片 EXIF 仍待实机验证。
 
 ## 功能
 
@@ -10,16 +10,19 @@
 - 已配对相机的自动重连
 - 通过 BLE 读取 GR IIIx 动态 Wi-Fi 参数
 - 在 StickS3 屏幕上显示相机 MJPEG 实时取景
+- 平衡预览路径：8 KB 网络读取缓冲，在内部 RAM 完成整帧后一次性提交到 LCD，减轻分块刷新感
+- LiveView 底部显示快门、光圈、ISO 与曝光补偿；拍摄时显示 AF/SHOT 命令反馈
 - 蓝色按键触发自动对焦与拍摄
+- Button B 短按切换 LiveView / 相机本机操作模式，长按 3 秒清除 BLE 配对
 - StickS3 屏幕输入配对验证码
 - 可选 Windows 快速验证码输入工具
-- GPS/BDS Unit v1.1 定位数据写入 GR IIIx（实验性，尚未完整验证）
+- GPS/BDS Unit v1.1 定位数据写入 GR IIIx（实验性，EXIF 写入尚未完整验证）
 
 ## 已验证硬件
 
 - RICOH GR IIIx
 - M5Stack StickS3（ESP32-S3）
-- USB 数据线（烧录和首次配对时使用）
+- USB 数据线（烧录、供电和可选的电脑验证码工具使用）
 - 可选：M5Stack GPS/BDS Unit v1.1（AT6668）
 
 本项目针对 **GR IIIx**。GR III、GR IV 及其他机型没有在此分支上验证，请勿假定协议完全相同。
@@ -69,10 +72,10 @@ pio run -e m5stack-sticks3 --target upload --upload-port COM4
 
 ### 方法 A：直接在 StickS3 上输入
 
-进入 PIN 页面后：
+进入 PIN 页面后，无需连接 Windows 电脑：
 
-- 短按蓝色按键：当前数字加 1（0 到 9 循环）
-- 长按蓝色按键：确认当前数字并移动到下一位
+- 短按 Button A（正面蓝色按键）：当前数字加 1（0 到 9 循环）
+- 短按 Button B（第二功能键）：确认当前数字并移动到下一位
 - 六位全部确认后：自动提交验证码
 
 ### 方法 B：使用 Windows 快速输入工具
@@ -100,21 +103,30 @@ py tools\pin_entry_gui.py COM4
 
 正常使用时 USB 线只负责供电或充电，**不需要连接相机**。StickS3 与相机之间使用 BLE 和 Wi-Fi 无线通信。
 
+### LiveView 与相机本机操作模式
+
+GR IIIx 进入 Wi-Fi 远程 LiveView 后，相机屏幕可能关闭，参数操作转移到远程设备。固件提供两种模式：
+
+- **短按 Button B**：停止 StickS3 LiveView 并关闭相机 Wi-Fi，只保留 BLE 快门。此时相机屏幕、按钮和转盘可恢复本机操作。
+- **再次短按 Button B**：重新开启相机 Wi-Fi 与 StickS3 LiveView。
+- 两种模式下均可短按 Button A 自动对焦并拍照。
+
+ESP32-S3 没有独立的 JPEG 硬件解码器。本项目使用经过优化的 JPEGDEC 软件解码，并直接把解码块写入 LCD；实际帧率仍受 GR IIIx 输出帧率、Wi-Fi/BLE 共存、JPEG 尺寸和信号强度影响，需要以屏幕与串口统计为准。
+
 ## 清除旧配对
 
 如果设备长期停在 `BLE CONNECTING`，相机显示已经配对但无法进入实时取景，通常是两边保存的绑定密钥不一致：
 
 1. 在 GR IIIx 的“已配对设备”中删除 StickS3 记录。
-2. 在 StickS3 上长按第二功能键/KEY2 约 3 秒，清除本地 BLE 绑定缓存。
+2. 在 StickS3 上长按 Button B 约 3 秒，清除本地 BLE 绑定缓存。
 3. 重新执行首次配对。
 
 ## GPS/BDS Unit v1.1（实验功能）
 
-GPS 模块计划通过 Grove 线连接 StickS3 的 Port.C，默认串口速率为 115200 bps。固件会在获得有效定位后，尝试每 10 秒向相机写入一次位置。
+GPS 模块通过 Grove 线连接 StickS3 底部 HY2.0-4P 接口。StickS3 的该接口为自定义 Grove，固件默认使用 `G9` 作为 GPS RX、`G10` 作为 GPS TX，并在启动时开启 `EXT_5V` 给 GPS 供电。GPS/BDS Unit v1.1 默认串口速率为 115200 bps。固件会在获得有效定位后，尝试每 10 秒向相机写入一次位置。
 
-目前实机日志显示 Port.C 可能返回无效的 RX/TX 引脚，因此以下内容尚未确认：
+目前以下内容尚未确认：
 
-- StickS3 与 GPS Unit v1.1 的实际 UART 引脚映射
 - 稳定取得卫星定位
 - GPS 信息成功写入照片 EXIF
 

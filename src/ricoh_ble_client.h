@@ -72,8 +72,10 @@ public:
   bool isBonded(const RicohBleDeviceInfo& info);
   bool isConnected() const;
   bool shutterReady() const;
+  bool prepareShutter();
   bool shoot(bool autofocus = true);
   bool openWifi();
+  bool closeWifi();
   bool readPowerState(RicohCameraPowerState& state);
   bool readOperationMode(RicohCameraOperationMode& mode);
   bool enablePowerStateNotify();
@@ -95,6 +97,7 @@ public:
 private:
   bool _begun = false;
   bool _connected = false;
+  bool _shootingFlavorReady = false;
   bool _lastFailureResourceExhausted = false;
   String _lastError;
   void* _client = nullptr;

@@ -11,6 +11,7 @@
 | Power button | `src/buttons.cpp` / `src/main.cpp` | `M5.BtnPWR.wasHold()` + `M5PM1.btnGetState()` |
 | LCD | `src/display.cpp` / `src/jpeg_decoder.cpp` | M5Unified / M5.Display / M5Canvas，未在代码中硬编码 SPI GPIO |
 | USB CDC serial | `platformio.ini` | `ARDUINO_USB_CDC_ON_BOOT=1` |
+| GPS/BDS Unit v1.1 UART | `src/services/GpsService.cpp` / `src/config.h` | StickS3 bottom HY2.0-4P custom Grove: `G9` as GPS RX, `G10` as GPS TX; `M5.Power.setExtOutput(true)` enables Grove 5V |
 
 ## TODO_UNVERIFIED
 

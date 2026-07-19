@@ -90,6 +90,43 @@ bool extractJsonInt(const String& json, const char* key, int& out) {
   return true;
 }
 
+bool extractJsonScalar(const String& json, const char* key, String& out) {
+  if (extractJsonString(json, key, out)) {
+    return true;
+  }
+
+  int colon = findJsonKey(json, key);
+  if (colon < 0) {
+    return false;
+  }
+  int begin = colon + 1;
+  while (begin < json.length() && isspace(static_cast<unsigned char>(json[begin]))) {
+    ++begin;
+  }
+  int end = begin;
+  while (end < json.length() && json[end] != ',' && json[end] != '}' &&
+         !isspace(static_cast<unsigned char>(json[end]))) {
+    ++end;
+  }
+  if (end <= begin) {
+    return false;
+  }
+  out = json.substring(begin, end);
+  out.trim();
+  return !out.isEmpty() && out != "null";
+}
+
+String prefixedValue(const String& value, const char* prefix) {
+  if (value.isEmpty()) {
+    return "";
+  }
+  String upper = value;
+  upper.toUpperCase();
+  String wanted(prefix != nullptr ? prefix : "");
+  wanted.toUpperCase();
+  return upper.startsWith(wanted) ? value : String(prefix) + value;
+}
+
 }  // namespace
 
 void GrApi::setEndpoint(const char* host, uint16_t port) {
@@ -334,6 +371,30 @@ void GrApi::parsePropsJson(const String& json, CameraProps& props) const {
     props.battery = String(batteryLevel) + "%";
   } else {
     props.battery = batteryState;
+  }
+
+  String value;
+  if (extractJsonScalar(json, "av", value) ||
+      extractJsonScalar(json, "aperture", value) ||
+      extractJsonScalar(json, "fNumber", value)) {
+    props.aperture = prefixedValue(value, "F");
+  }
+  if (extractJsonScalar(json, "tv", value) ||
+      extractJsonScalar(json, "shutterSpeed", value) ||
+      extractJsonScalar(json, "shutter_speed", value)) {
+    props.shutterSpeed = value;
+  }
+  if (extractJsonScalar(json, "sv", value) || extractJsonScalar(json, "iso", value)) {
+    props.iso = prefixedValue(value, "ISO");
+  }
+  if (extractJsonScalar(json, "xv", value) ||
+      extractJsonScalar(json, "exposureCompensation", value) ||
+      extractJsonScalar(json, "exposure_compensation", value)) {
+    props.exposureCompensation = value;
+  }
+  if (extractJsonScalar(json, "liveState", value) ||
+      extractJsonScalar(json, "live_state", value)) {
+    props.liveState = value;
   }
 }
 

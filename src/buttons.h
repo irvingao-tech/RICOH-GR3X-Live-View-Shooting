@@ -6,6 +6,7 @@
 struct ButtonEvents {
   bool buttonA = false;
   bool buttonAHold = false;
+  bool buttonB = false;
   bool resetPairing = false;
   bool powerOff = false;
   bool any = false;

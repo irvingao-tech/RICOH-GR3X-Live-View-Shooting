@@ -14,7 +14,9 @@ constexpr uint16_t DISPLAY_WIDTH = 240;
 constexpr uint16_t DISPLAY_HEIGHT = 135;
 
 constexpr size_t FRAME_BUFFER_SIZE = 256 * 1024;
-constexpr size_t STREAM_READ_BUFFER_SIZE = 2048;
+// Larger socket reads reduce loop/driver overhead while receiving the MJPEG
+// stream.  The buffer lives in internal RAM so keep it modest.
+constexpr size_t STREAM_READ_BUFFER_SIZE = 8192;
 
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t WIFI_CHANNEL_HINT_CONNECT_TIMEOUT_MS = 6000;
@@ -23,6 +25,7 @@ constexpr uint32_t WIFI_CACHED_CONNECT_GRACE_MS = 700;
 constexpr uint32_t WIFI_CACHE_REFRESH_DELAY_MS = 5000;
 constexpr uint32_t BLE_SCAN_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t PROPS_TIMEOUT_MS = 3500;
+constexpr uint32_t PROPS_REFRESH_TIMEOUT_MS = 400;
 constexpr uint32_t LIVEVIEW_STALL_TIMEOUT_MS = 5000;
 constexpr uint32_t UI_STATUS_INTERVAL_MS = 1000;
 constexpr uint32_t POWER_BUTTON_POLL_MS = 50;
@@ -30,11 +33,16 @@ constexpr uint32_t POWER_BUTTON_HOLD_MS = 1200;
 constexpr uint32_t POWER_BUTTON_RELEASE_WAIT_MS = 3000;
 constexpr uint8_t KEY2_FALLBACK_GPIO = 12;
 constexpr uint32_t KEY2_PAIRING_RESET_HOLD_MS = 3000;
-constexpr uint32_t PROPS_REFRESH_INTERVAL_MS = 60000;
+constexpr uint32_t PROPS_REFRESH_INTERVAL_MS = 5000;
 
 #ifndef JPEG_SCALE_POLICY
 #define JPEG_SCALE_POLICY JPEG_SCALE_HALF
 #endif
+
+// Direct LCD mode maximizes speed but exposes JPEG block refresh. The default
+// balanced mode decodes into an internal-RAM Canvas and submits one full frame.
+constexpr bool LIVEVIEW_FAST_DIRECT_LCD = false;
+constexpr bool LIVEVIEW_DRAW_OVERLAY = true;
 
 constexpr uint32_t BLE_SCAN_SECONDS = 2;
 constexpr uint32_t BLE_FAST_CONNECT_TIMEOUT_MS = 3000;
@@ -84,6 +92,12 @@ constexpr uint8_t RICOH_BLE_GR3_POWER_STATE_SLEEP_VALUE = 0x02;
 constexpr uint32_t GPS_UART_BAUD = 115200;
 constexpr uint32_t GPS_PUSH_INTERVAL_MS = 10000;
 constexpr uint32_t GPS_FIX_MAX_AGE_MS = 15000;
+#ifndef GPS_UART_RX_PIN
+#define GPS_UART_RX_PIN 9
+#endif
+#ifndef GPS_UART_TX_PIN
+#define GPS_UART_TX_PIN 10
+#endif
 
 
 #ifndef RICOH_BLE_INFO_SERVICE_UUID

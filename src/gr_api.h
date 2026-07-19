@@ -7,6 +7,11 @@ struct CameraProps {
   bool ok = false;
   String model;
   String battery;
+  String aperture;
+  String shutterSpeed;
+  String iso;
+  String exposureCompensation;
+  String liveState;
 };
 
 class GrApi {

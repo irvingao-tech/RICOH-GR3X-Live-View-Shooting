@@ -12,7 +12,9 @@ ButtonEvents Buttons::poll() {
   M5.update();
 
   ButtonEvents events;
-  if (M5.BtnA.wasClicked()) {
+  // Fire on the physical press edge instead of waiting for release. This
+  // removes the user's button hold time from the shutter latency.
+  if (M5.BtnA.wasPressed()) {
     events.buttonA = true;
     events.any = true;
   }
@@ -26,6 +28,10 @@ ButtonEvents Buttons::poll() {
   }
   const bool key2Down = key2Pressed();
   if (!key2Down) {
+    if (_key2PressedSince != 0 && !_key2HoldReported) {
+      events.buttonB = true;
+      events.any = true;
+    }
     _key2PressedSince = 0;
     _key2HoldReported = false;
   } else {

@@ -13,6 +13,9 @@ UserCommand ButtonInput::commandFromEvents(const ButtonEvents& events) {
     if (events.resetPairing) {
         return UserCommand::ResetPairing;
     }
+    if (events.buttonB) {
+        return UserCommand::StopPreview;
+    }
     if (events.buttonA) {
         return UserCommand::Shoot;
     }

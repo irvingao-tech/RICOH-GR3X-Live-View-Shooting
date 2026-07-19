@@ -36,6 +36,7 @@ public:
 
     Result shoot(bool autofocus = true);
     Result openWifi();
+    Result closeWifi();
     Result readPowerState(RicohCameraPowerState& state);
     Result readOperationMode(RicohCameraOperationMode& mode);
     Result enablePowerStateNotify();

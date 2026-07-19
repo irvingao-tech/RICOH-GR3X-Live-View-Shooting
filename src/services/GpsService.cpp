@@ -9,16 +9,16 @@ namespace rvf {
 GpsService::GpsService() : _serial(1) {}
 
 bool GpsService::begin() {
-  const int8_t rx = M5.getPin(m5::pin_name_t::port_c_rxd);
-  const int8_t tx = M5.getPin(m5::pin_name_t::port_c_txd);
+  const int8_t rx = GPS_UART_RX_PIN;
+  const int8_t tx = GPS_UART_TX_PIN;
   if (rx < 0 || tx < 0) {
-    Serial.printf("GPS: StickS3 Port.C unavailable rx=%d tx=%d\n", rx, tx);
+    Serial.printf("GPS: UART pins unavailable rx=%d tx=%d\n", rx, tx);
     return false;
   }
 
   _serial.begin(GPS_UART_BAUD, SERIAL_8N1, rx, tx);
   _started = true;
-  Serial.printf("GPS: AT6668 UART ready baud=%lu rx=%d tx=%d\n",
+  Serial.printf("GPS: AT6668 UART ready baud=%lu rx=G%d tx=G%d\n",
                 static_cast<unsigned long>(GPS_UART_BAUD), rx, tx);
   return true;
 }

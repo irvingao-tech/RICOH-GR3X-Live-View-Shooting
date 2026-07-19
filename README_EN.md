@@ -27,7 +27,7 @@
 
 ## What Ships (Core Capabilities)
 
-* **High-framerate LiveView Rendering**: A dedicated MJPEG stream parser backed by ESP32-S3 hardware JPEG decoding directly onto LovyanGFX / M5Canvas, minimizing display latency.
+* **Balanced LiveView Rendering**: An MJPEG stream parser uses the optimized JPEGDEC software decoder, builds each frame in an internal-RAM Canvas, and submits it to the LCD in one burst to reduce visible block refresh. The HUD shows shutter speed, aperture, ISO, exposure compensation, and AF/shutter command feedback. ESP32-S3 does not provide a dedicated JPEG hardware decoder, so actual FPS remains camera- and Wi-Fi-dependent.
 * **Restructured Layered Architecture**: Transitioned from a single-file codebase to a clean Supervisor-Controller-Service pattern, significantly improving reliability and maintenance.
 * **Camera Standby & Wake Guard**: Queries the camera's `Power State` and `Operation Mode` before enabling Wi-Fi to prevent waking up a camera that is explicitly powered down or in standby.
 * **WLAN Parameter Caching**: Caches SSID, BSSID, channel, and encryption details in ESP32 NVS. Subsequent boots achieve ultra-fast connections in `<0.5s` by skipping BLE renegotiation.
@@ -70,6 +70,7 @@ You can control the viewfinder's behavior using the buttons (Button A, Button B,
 | :--- | :--- | :--- |
 | **Button A** | During LiveView (`LIVEVIEW_RUNNING`) | Triggers BLE Auto-Focus (AF) and shoots (writes `ShootingFlavor=IMMEDIATE`) |
 | **Button A** | Standby Cooldown (`CAMERA_SLEEP_GUARD`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
+| **Button B** | Short press | Toggles between StickS3 LiveView and local-camera mode. Local-camera mode stops LiveView and camera Wi-Fi while retaining the BLE shutter, allowing the camera LCD and controls to be used. |
 | **Button B** | Any State (Long Press for 3s) | Triggers BLE pairing reset: clears stored BLE pairing/bonding information, terminates active Wi-Fi/BLE connections, and restarts scanning for new camera pairing |
 | **Power Button (BtnPWR)** | Any State (Double Press) | Powers the StickS3 off/on |
 
