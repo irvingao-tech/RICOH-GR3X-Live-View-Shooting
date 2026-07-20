@@ -1,5 +1,7 @@
 # RICOH GR IIIx Live View Shooting
 
+![RICOH GR IIIx Live View Shooting 宣传图](assets/ricoh-gr3x-live-view-shooting.png)
+
 在 **M5Stack StickS3** 上运行的 RICOH GR IIIx 蓝牙遥控器与实时取景器。StickS3 通过 BLE 与相机安全配对并读取 Wi-Fi 参数，再连接相机热点，在屏幕上显示 Live View；实时取景时短按蓝色按键即可自动对焦并拍照。
 
 > 当前实机状态：**GR IIIx 首次配对、自动重连、Wi-Fi 实时取景和 BLE 快门均已验证可用。** GPS/BDS Unit v1.1 的读取与写入代码已经加入，StickS3 Grove 供电与 UART 引脚已按 G9/G10 适配，但 GPS 写入照片 EXIF 仍待实机验证。
