@@ -1,5 +1,7 @@
 # RICOH GR IIIx Live View Shooting
 
+**简体中文** | [English](README_EN.md)
+
 ![RICOH GR IIIx Live View Shooting 宣传图](assets/ricoh-gr3x-live-view-shooting.png)
 
 ### 宣传视频

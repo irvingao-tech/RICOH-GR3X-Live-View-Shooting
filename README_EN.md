@@ -1,223 +1,198 @@
-<p align="center">
-  <a href="./README.md">
-    <img alt="简体中文" src="https://img.shields.io/badge/简体中文-EAEAEA?style=for-the-badge&labelColor=EAEAEA&color=111111" />
-  </a>
-  <a href="./README_EN.md">
-    <img alt="English" src="https://img.shields.io/badge/English-111111?style=for-the-badge" />
-  </a>
-</p>
+# RICOH GR IIIx Live View Shooting
 
-<h1 align="center">RICOH GR Live View Shooting</h1>
+[简体中文](README.md) | **English**
 
-<p align="center">
-  A wireless live-view shooting and BLE remote shutter firmware running on the M5Stack StickS3 for RICOH GR cameras.
-</p>
+![RICOH GR IIIx Live View Shooting promotional image](assets/ricoh-gr3x-live-view-shooting.png)
 
-<p align="center">
-  The firmware uses <strong>BLE as the entry point for camera discovery, pairing, wake control, and shutter control</strong>. It dynamically obtains Wi-Fi credentials over BLE and requests MJPEG live-view streams via HTTP API to render preview frames smoothly on the StickS3.
-</p>
+### Promotional Video
 
-> [!NOTE]
-> Looking for details on the communication protocol or state machine? Read [docs/project_overview.md](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/docs/project_overview.md) for the architecture overview, and [docs/ricoh_ble_protocol.md](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/docs/ricoh_ble_protocol.md) for detailed BLE characteristics and handles.
+[![Watch the RICOH GR IIIx Live View Shooting promotional video](https://img.youtube.com/vi/Fc9UBgckpoI/hqdefault.jpg)](https://www.youtube.com/watch?v=Fc9UBgckpoI)
 
-> [!NOTE]
-> **Project Development Note**: The author of this repository does not have an embedded development background. All firmware code, system architecture design, and documentation in this repository were entirely developed and structured in collaboration with the AI assistant (Codex). Please excuse any code design issues or inefficiencies. You are highly welcome to open [Issues](https://github.com/sky18Dragon/RicohViewfinder/issues) or submit Pull Requests for discussion and improvement!
+Click the video thumbnail above to watch it on YouTube.
 
----
+A Bluetooth remote controller and live-view monitor for the **RICOH GR IIIx**, running on the **M5Stack StickS3**. The StickS3 pairs securely with the camera over BLE, reads its Wi-Fi credentials, connects to the camera's access point, and displays Live View on its screen. While Live View is active, briefly press the blue button to autofocus and take a photo.
 
-## What Ships (Core Capabilities)
+> Current hardware status: **Initial pairing, automatic reconnection, Wi-Fi Live View, and the BLE shutter have all been verified on a GR IIIx.** Support for reading data from the GPS/BDS Unit v1.1 and sending it to the camera has been added. StickS3 Grove power and UART pins are configured for G9/G10, but writing GPS data into photo EXIF still requires hardware verification.
 
-* **Balanced LiveView Rendering**: An MJPEG stream parser uses the optimized JPEGDEC software decoder, builds each frame in an internal-RAM Canvas, and submits it to the LCD in one burst to reduce visible block refresh. The HUD shows shutter speed, aperture, ISO, exposure compensation, and AF/shutter command feedback. ESP32-S3 does not provide a dedicated JPEG hardware decoder, so actual FPS remains camera- and Wi-Fi-dependent.
-* **Restructured Layered Architecture**: Transitioned from a single-file codebase to a clean Supervisor-Controller-Service pattern, significantly improving reliability and maintenance.
-* **Camera Standby & Wake Guard**: Queries the camera's `Power State` and `Operation Mode` before enabling Wi-Fi to prevent waking up a camera that is explicitly powered down or in standby.
-* **WLAN Parameter Caching**: Caches SSID, BSSID, channel, and encryption details in ESP32 NVS. Subsequent boots achieve ultra-fast connections in `<0.5s` by skipping BLE renegotiation.
-* **Physical Button AF Shutter**: Fully implements the official RICOH BLE Shooting Service protocol, using Button A to trigger high-precision auto-focus (AF) and instant capture.
-* **One-Click BLE Reset**: Long press Button B to clear stored BLE pairing and bonding data, allowing quick pairing with a new camera.
-* **Host-side Native Test Suite**: Allows compiling and running data parser and state transition tests directly on your host machine without hardware.
+## Features
 
+- RICOH GR IIIx BLE scanning, secure six-digit passkey pairing, and saved bonding information
+- Automatic reconnection to a previously paired camera
+- Dynamic GR IIIx Wi-Fi credential retrieval over BLE
+- Camera MJPEG Live View displayed on the StickS3 screen
+- Balanced preview pipeline: an 8 KB network read buffer, full-frame assembly in internal RAM, and a single LCD submission to reduce visible block-by-block refresh
+- Live View HUD for shutter speed, aperture, ISO, and exposure compensation, plus AF/SHOT command feedback during capture
+- Autofocus and capture using the blue button
+- Short-press Button B to switch between Live View and local-camera operation; hold it for three seconds to clear BLE pairing
+- Six-digit pairing passkey entry directly on the StickS3 screen
+- Optional Windows utility for faster passkey entry
+- Experimental GPS/BDS Unit v1.1 location transfer to the GR IIIx; EXIF writing is not yet fully verified
 
----
+## Verified Hardware
 
-## Quick Start
+- RICOH GR IIIx
+- M5Stack StickS3 (ESP32-S3)
+- USB data cable for flashing, power, and the optional computer-based passkey utility
+- Optional: M5Stack GPS/BDS Unit v1.1 (AT6668)
 
-### 1. Build and Flash the Firmware
-Connect the M5Stack StickS3 to your PC using a USB cable. Ensure PlatformIO Core is installed, then run:
-```bash
-# Build and upload the firmware
-platformio run --target upload
+This project targets the **GR IIIx**. The GR III, GR IV, and other models have not been verified on this branch. Do not assume that their protocols are identical.
 
-# Optionally, specify the upload port if automatic detection fails
-platformio run --target upload --upload-port COM6
+## Development Environment
+
+The recommended setup on Windows is [Visual Studio Code](https://code.visualstudio.com/) with the PlatformIO extension. The commands below must be run in a terminal where PlatformIO Core CLI is available.
+
+The first build downloads the ESP32 platform and required libraries, so the relevant package sources must be reachable.
+
+## Build and Flash
+
+1. Connect the StickS3 using a USB cable that supports data transfer.
+2. Open PowerShell and change to the project directory.
+3. Build the firmware:
+
+```powershell
+pio run -e m5stack-sticks3
 ```
 
-### 2. First-time Scan and Pairing
-1. Turn on your RICOH GR camera, and enable **Bluetooth** in the settings menu.
-2. Power on the StickS3. The screen will display scanning status. It automatically looks for BLE advertisements starting with `GR_`.
-3. Once found, the StickS3 initiates secure pairing (Bonding) and persists the bonded identity in NVS.
+4. Find the StickS3 serial port and flash the firmware. This example uses `COM4`:
 
-### 3. Automatic LiveView Startup
-1. After pairing completes, the StickS3 requests Wi-Fi ON and reads the dynamically generated passphrase and BSSID over BLE.
-2. The StickS3 joins the camera's Wi-Fi Access Point.
-3. Once connected, it initiates a stream from `/v1/liveview` and starts displaying the camera view on the LCD screen.
-
----
-
-## Controls
-
-You can control the viewfinder's behavior using the buttons (Button A, Button B, and Power button) on the StickS3:
-
-| Physical Button | App State / Context | Triggered Action |
-| :--- | :--- | :--- |
-| **Button A** | During LiveView (`LIVEVIEW_RUNNING`) | Triggers BLE Auto-Focus (AF) and shoots (writes `ShootingFlavor=IMMEDIATE`) |
-| **Button A** | Standby Cooldown (`CAMERA_SLEEP_GUARD`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
-| **Button B** | Short press | Toggles between StickS3 LiveView and local-camera mode. Local-camera mode stops LiveView and camera Wi-Fi while retaining the BLE shutter, allowing the camera LCD and controls to be used. |
-| **Button B** | Any State (Long Press for 3s) | Triggers BLE pairing reset: clears stored BLE pairing/bonding information, terminates active Wi-Fi/BLE connections, and restarts scanning for new camera pairing |
-| **Power Button (BtnPWR)** | Any State (Double Press) | Powers the StickS3 off/on |
-
-
----
-
-## Core Architecture & Flow
-
-### 1. Software Architecture Layout
-The codebase has been refactored into distinct layers communicating via asynchronous events:
-* **[SystemSupervisor](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.h)**: A health monitor running as a background task. It detects stalled Wi-Fi / HTTP LiveView streams and schedules recovery actions.
-* **[AppController](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.h)**: The central business logic state machine, coordinating connections, power guards, manual wake overrides, and event dispatch.
-* **[BleCameraService](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.h)**: Encapsulates BLE tasks, such as scanning, bonding, querying power/shutter services, and writing shutter commands.
-* **[WifiPreviewService](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.h)**: Manages Wi-Fi STA connections and reads the HTTP MJPEG stream.
-
-### 2. State Transition Flow
-The diagram below details the application's connection and fallback paths from boot to live preview:
-
-```mermaid
-graph TD
-    A[Power On & Init] --> B[Load Peripherals & NVS Profile]
-    B --> C{Camera Identity Saved?}
-    C -->|Yes| D[Fast Direct Reconnect via Saved Address]
-    C -->|No| E[Scan for GR_ Advertisements & Pair]
-    D --> F{Reconnect Success?}
-    F -->|No| E
-    E --> G[BLE Paired & Bonded]
-    F -->|Yes| H[BLE Connected]
-    G --> H
-    H --> I[Read Power State & Operation Mode]
-    I --> J{Operation Mode?}
-    J -->|CAPTURE / PLAYBACK| K[Write 0x0135 to request Wi-Fi ON]
-    J -->|BLE_STARTUP / POWER_OFF_TRANSFER| L[Enter CAMERA_SLEEP_GUARD]
-    K --> M{Wi-Fi Params Cached?}
-    M -->|Yes| N[Fast Connect using BSSID + Channel <Short Timeout>]
-    M -->|No| O[Read Fresh BLE Wi-Fi Params & Connect]
-    N --> P{Connect Success?}
-    P -->|Yes| Q[Defer Cache Refresh & Start LiveView]
-    P -->|No| O
-    O --> Q
-    Q --> R[LIVEVIEW_RUNNING]
-    L --> S[Standby Guard: 15s Cooldown, Wait for Button A Manual Wake]
-    S -->|Press Button A| T[Rebuild BLE Stack & Reconnect]
-    T --> D
+```powershell
+pio run -e m5stack-sticks3 --target upload --upload-port COM4
 ```
 
-### 3. Camera Power-off and Sleep Protection (Standby Guard)
-When the camera turns off (due to auto power-off or manual shutdown), or when the StickS3 boots and finds the camera in BLE standby (`BLE_STARTUP`):
-1. The StickS3 immediately tears down its Wi-Fi and BLE connections to save camera power.
-2. The state machine transitions to `CAMERA_SLEEP_GUARD` and starts a **15-second safety cooldown**.
-3. During this cooldown and subsequent standby phase, **automatic wake requests are completely blocked**. The camera remains in standby until the user presses Button A to wake it intentionally.
+If you see `Write timeout` or the upload remains at `Connecting...`:
 
----
+1. Close any serial monitor or passkey utility using that port.
+2. Keep the USB cable connected.
+3. Hold the StickS3 side reset/power button and release it after the green indicator flashes to enter download mode.
+4. Run the upload command again.
 
-## Key Configuration
+The upload succeeded when the output contains `[SUCCESS]`, `Hash of data verified`, and `Hard resetting via RTS pin`.
 
-Customize these constants in [src/config.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/config.h) or `platformio.ini` to adjust timing:
+## First-time Bluetooth Pairing
 
-| Parameter | Default Value | Description |
-| :--- | :---: | :--- |
-| `BLE_SCAN_SECONDS` | `2` | Duration of each Bluetooth scan cycle (seconds) |
-| `BLE_FAST_CONNECT_TIMEOUT_MS` | `3000` | Timeout when reconnecting directly to a cached BLE address (ms) |
-| `BLE_CONNECT_TIMEOUT_MS` | `8000` | Timeout when establishing a scanned BLE connection (ms) |
-| `BLE_CONNECT_ATTEMPTS` | `12` | Maximum connection cycles when a cached identity exists |
-| `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | `1500` | Post-connect wait time for BLE security/encryption to settle (ms) |
-| `RICOH_BLE_SECURITY_WAIT_MS` | `7000` | Max timeout for first-time security bonding to complete (ms) |
-| `RICOH_BLE_POWER_NOTIFY_SETTLE_MS` | `30` | Short settle window after enabling power notifications, used to catch immediate power-off notifications before Wi-Fi ON |
-| `WIFI_CACHED_CONNECT_GRACE_MS` | `700` | Warm-up delay after requesting Wi-Fi ON before trying cached credentials |
-| `WIFI_CACHED_CONNECT_TIMEOUT_MS` | `1200` | Aggressive connection timeout for cached BSSID + Channel (ms) |
-| `WIFI_CONNECT_TIMEOUT_MS` | `15000` | Overall connection timeout limit for Wi-Fi STA |
-| `CAMERA_POWER_OFF_COOLDOWN_MS` | `15000` | Mandatory cooldown block duration after camera power-off is detected |
+### On the Camera
 
----
+1. Turn on the GR IIIx.
+2. Make sure Bluetooth is enabled.
+3. If an earlier pairing attempt failed, remove the StickS3 entry from the camera's paired-device list.
+4. Choose the camera option to add a new device or begin pairing.
+5. Start or reset the StickS3 and wait for `BLE SEARCHING` / `BLE CONNECTING` to appear.
 
-## Camera Compatibility
+The camera will display a six-digit passkey. This code is not sent by SMS or email; it must be entered on the StickS3.
 
-> [!NOTE]
-> The current code and protocol parameters have been verified on both **RICOH GR IV** and **RICOH GR IV HDF**.
+### Method A: Enter the Passkey on the StickS3
 
-| Camera Series | Status | Compatibility Notes |
-| :--- | :---: | :--- |
-| **RICOH GR IV HDF** | **Verified Working** | Core development target. Supports BLE shutter and LiveView out of the box. |
-| **RICOH GR IV** | **Verified Working** | Tested with BLE pairing and reconnect, Wi-Fi activation, LiveView, and BLE AF shutter. |
-| **RICOH GR III / GR IIIx** | **Not Supported** | Uses different BLE handshakes and wake sequences. Outside the scope of this project. |
-| **RICOH GR II** | **Not Supported** | Lacks the BLE-first broadcast wake-up and on-demand Wi-Fi AP control interfaces. |
+After the passkey screen appears, no Windows computer is required:
 
----
+- Short-press Button A (the blue front button): increment the current digit, cycling from 0 to 9
+- Short-press Button B (the secondary function button): confirm the current digit and move to the next position
+- After all six digits are confirmed: the passkey is submitted automatically
+
+### Method B: Use the Windows Passkey Utility
+
+The first-time pairing window is short, so the computer utility is usually faster. Install Python 3 and `pyserial`, then run:
+
+```powershell
+py -m pip install pyserial
+py tools\pin_entry_gui.py COM4
+```
+
+Replace `COM4` with the actual StickS3 serial port. Once the utility is connected, enter the six digits on the computer keyboard as soon as the camera displays them. The utility submits the passkey automatically after the sixth digit.
+
+> The passkey utility and PlatformIO serial monitor cannot use the same COM port simultaneously. Close the utility before flashing firmware.
+
+After pairing succeeds, a new entry appears in the camera's paired-device list. The StickS3 continues by connecting to the camera's Wi-Fi and enters Live View automatically. Normally, the passkey does not need to be entered again.
+
+## Daily Use
+
+1. Turn on the GR IIIx and leave it in shooting mode.
+2. Turn on the StickS3.
+3. Wait for BLE and Wi-Fi to connect automatically.
+4. When Live View appears on the StickS3, **briefly press the blue front button** to autofocus and take a photo.
+5. Photos are saved to the camera's SD card, not to the StickS3.
+
+During normal use, USB is needed only for power or charging and **does not connect to the camera**. The StickS3 communicates with the camera wirelessly over BLE and Wi-Fi.
+
+### Live View and Local-camera Modes
+
+When the GR IIIx enters remote Wi-Fi Live View, its own screen may turn off and parameter controls may move to the remote device. The firmware provides two modes:
+
+- **Short-press Button B** to stop StickS3 Live View and turn off camera Wi-Fi while retaining the BLE shutter. The camera screen, buttons, and dials become available for local operation.
+- **Short-press Button B again** to restart camera Wi-Fi and StickS3 Live View.
+- In either mode, short-press Button A to autofocus and take a photo.
+
+The ESP32-S3 has no dedicated JPEG hardware decoder. This project uses the optimized JPEGDEC software decoder and writes decoded blocks directly to the LCD. Actual frame rate still depends on the GR IIIx output rate, Wi-Fi/BLE coexistence, JPEG size, and signal strength. Use the screen and serial statistics as the source of truth.
+
+## Clear Existing Pairing
+
+If the device remains at `BLE CONNECTING` even though the camera reports that it is paired, the bonding keys stored on each side are usually inconsistent:
+
+1. Remove the StickS3 entry from the GR IIIx paired-device list.
+2. Hold Button B on the StickS3 for about three seconds to clear its local BLE bonding cache.
+3. Repeat the first-time pairing procedure.
+
+## GPS/BDS Unit v1.1 (Experimental)
+
+Connect the GPS module to the StickS3 bottom HY2.0-4P port with a Grove cable. This is a custom Grove port: the firmware uses `G9` as GPS RX and `G10` as GPS TX and enables `EXT_5V` at startup to power the module. The GPS/BDS Unit v1.1 defaults to 115200 bps. Once a valid fix is available, the firmware attempts to send the position to the camera every ten seconds.
+
+The following items have not yet been confirmed:
+
+- Stable satellite positioning
+- Successful GPS metadata writing to photo EXIF
+
+The GPS module is optional. Leaving it disconnected does not affect BLE, Live View, or shooting.
+
+## Troubleshooting
+
+### The Camera Lists the Device, but the StickS3 Remains at `BLE CONNECTING`
+
+Delete the old bonding information from both the camera and StickS3, then pair them again. Clearing only one side is usually insufficient.
+
+### The Camera Quickly Reports a Pairing Failure After Showing the Passkey
+
+Start the Windows passkey utility first and confirm that it is connected to the COM port. Then begin camera pairing and enter the six digits immediately when they appear.
+
+### The Passkey Utility Cannot Connect to the COM Port
+
+- Confirm the actual port number in Windows Device Manager.
+- Close PlatformIO serial monitor and any other application using the serial port.
+- Restart the utility with the correct port, for example `py tools\pin_entry_gui.py COM5`.
+
+### The Green Indicator Keeps Flashing
+
+Flashing during pairing or connection normally means the firmware is still working; it does not by itself indicate a failed upload. Check the screen state and serial log for the actual status.
+
+### Live View Works, but the Camera Does Not Take a Photo
+
+Make sure the camera is still in shooting mode, and briefly press rather than hold the blue button. Check the camera's SD card for the captured photo.
+
+## Serial Diagnostics
+
+When troubleshooting, close the passkey utility and start a serial monitor:
+
+```powershell
+pio device monitor --baud 115200 --port COM4
+```
+
+When opening an issue, include a complete log beginning at StickS3 startup, but redact private information such as the Wi-Fi password.
 
 ## Project Structure
 
-* [platformio.ini](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/platformio.ini) — PlatformIO configuration and dependency mapping
-* [src/main.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/main.cpp) — Entry point, setup initialization, and main loop
-* [src/app/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/) — Application state and control flow
-  * [AppController.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.cpp) / [AppController.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.h) — State machine coordinator
-  * [AppState.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppState.h) — List of application states
-  * [AppFlowActions.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppFlowActions.h) — Action maps for flow transitions
-* [src/supervisor/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/) — Runtime health watchdog
-  * [SystemSupervisor.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.cpp) / [SystemSupervisor.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.h) — Monitors stream health and triggers resets on stall
-* [src/services/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/) — Protocol and stream transport layers
-  * [BleCameraService.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.cpp) / [BleCameraService.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.h) — NimBLE client, queries modes/shutter characteristics
-  * [WifiPreviewService.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.cpp) / [WifiPreviewService.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.h) — Wi-Fi link management and LiveView downloader
-  * [PreviewFrameBuffer.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/PreviewFrameBuffer.cpp) / [PreviewFrameBuffer.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/PreviewFrameBuffer.h) — Circular double-buffered frame manager to reduce fragmentation and delay
-* [src/camera_profile_store.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/camera_profile_store.cpp) — Handles NVS profiles and Wi-Fi credential serialization
-* [src/jpeg_decoder.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/jpeg_decoder.cpp) / [mjpeg_stream.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/mjpeg_stream.cpp) — Splits MJPEG streams and decodes JPEG frames using ESP32-S3 hardware acceleration
-* [test/test_native/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/test/test_native/) — Local host-side unit tests verifying core logic and stream processing
-
----
-
-## Troubleshooting & Logs
-
-### 1. Normal Connect & Launch
 ```text
-BLE: connected secure connect_ms=2800
-Flow: BLE_SCAN -> BLE_READY (BLE connected)
-BLE: power handle=0x00EB read value=0x01
-BLE: operation mode read value=0x00 state=CAPTURE
-BLE: power notify enabled cccd=0x00EC
-BLE: Wi-Fi open requested
-BLE: Wi-Fi parameters received ssid='GR_H264456' bssid='F2:3E:05:26:45:56' freq=2412 channel=1
-WiFi cache: waiting 700ms for camera AP before cached connect
-WiFi cache: trying cached params ssid='GR_H264456' bssid='F2:3E:05:26:45:56' channel=1 short_timeout=1200ms
-WiFi: connect completed in 450ms channel=1 status=CONNECTED
-Flow: WIFI_CONNECTING -> LIVEVIEW_RUNNING (LiveView opened)
-LiveView: connected
+src/                         StickS3 firmware source code
+src/ricoh_ble_client.*       GR IIIx BLE, pairing, Wi-Fi credentials, shutter, and GPS protocol
+src/services/GpsService.*    GPS/BDS Unit v1.1 reader service (experimental)
+tools/pin_entry_gui.py       Windows first-time pairing passkey utility
+docs/gr3x_quickstart.md      Condensed test procedure
+platformio.ini               PlatformIO build configuration
 ```
 
-### 2. Standby Intercept (Auto-wake Blocked)
-```text
-BLE: power handle=0x00EB read value=0x01
-BLE: operation mode read value=0x02 state=BLE_STARTUP
-WiFi blocked: camera operation mode=BLE_STARTUP while power=ON source=WiFi open
-Flow: BLE_READY -> CAMERA_SLEEP_GUARD (BLE operation mode standby)
-BLE guard: remote disconnect reason=533; auto wake paused for 15s, then manual wake required
-```
-*(The firmware shuts down connection elements, blocks automatic wake, and goes quiet)*
+## Origin and Acknowledgments
 
-### 3. Watchdog Recovery on Stalled LiveView
-```text
-SystemSupervisor: checking preview health...
-SystemSupervisor: liveview last frame time 5200 ms ago, threshold is 5000 ms
-SystemSupervisor: liveview stall detected! Requesting system recovery.
-Flow: LIVEVIEW_RUNNING -> BLE_READY (Resetting connections)
-...
-```
+This project is based on [sky18Dragon/RICOH-GR-Live-View-Shooting](https://github.com/sky18Dragon/RICOH-GR-Live-View-Shooting). Thanks to the original author for the core StickS3 live-view architecture and GR camera-control implementation.
 
----
+This branch adds and adjusts GR IIIx-specific UUID characteristic access, secure pairing, six-digit passkey entry, connection-resource cleanup, Wi-Fi credential retrieval, and experimental GPS support.
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/LICENSE). You are free to modify, use, and distribute this firmware, provided any modifications or derivative works are also open-sourced under the GPL-3.0.
+This project retains the original [GNU General Public License v3.0](LICENSE). Modified or derivative versions must comply with GPL-3.0 and preserve the original project's copyright and license notices.
